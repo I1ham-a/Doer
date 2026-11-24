@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Doer — планировщик дня</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="brand">✓ Doer</div>
+    <nav id="smart"></nav>
+    <div class="side-head"><span>Списки</span><button id="addList" title="Новый список">+</button></div>
+    <nav id="lists"></nav>
+  </aside>
+  <div id="scrim"></div>
+  <main id="main">
+    <header>
+      <button id="menu" aria-label="Меню">☰</button>
+      <h1 id="title"></h1>
+      <input id="search" type="search" placeholder="Поиск…">
+    </header>
+    <div id="content">
+      <form id="quick" autocomplete="off">
+        <input id="quickInput" placeholder="+ Добавить задачу   (напр. «Встреча завтра в 15:00 !2 #Работа»)">
+      </form>
+      <div id="calendar" hidden></div>
+      <div id="tasks"></div>
+    </div>
+  </main>
+  <section id="detail" hidden></section>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
