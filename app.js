@@ -54,7 +54,7 @@ function visible() {
   if (view === 'today') return r.filter(x => x.date && x.date <= t);
   if (view === 'tomorrow') return r.filter(x => x.date === tm);
   if (view === 'week') return r.filter(x => x.date && x.date <= w);
-  if (view === 'calendar') return r.filter(x => x.date === calDay && !x.time);
+  if (view === 'calendar') return calMode === 'week' ? [] : r.filter(x => x.date === calDay && !x.time);
   if (view.startsWith('list:')) return r.filter(x => x.listId === view.slice(5));
   return r;
 }
@@ -74,7 +74,9 @@ function renderSide() {
     ['matrix', '🔲', 'Матрица', ''],
     ['focus', '🍅', 'Помодоро', pomo.running ? fmtSec(pomoLeft()) : ''],
     ['habits', '🔥', 'Привычки', state.habits.filter(h => !(h.checks || {})[t]).length || ''],
-    ['done', '✅', 'Выполнено', '']
+    ['done', '✅', 'Выполнено', ''],
+    ['stats', '📊', 'Статистика', ''],
+    ['settings', '⚙️', 'Настройки', '']
   ];
   $('#syncBtn').textContent = syncLabel();
   $('#smart').innerHTML = smart.map(([id, ic, n, c]) => `<button class="nav ${view === id ? 'active' : ''}" data-view="${id}"><span>${ic}</span>${n}<span class="cnt">${c}</span></button>`).join('');
@@ -83,7 +85,7 @@ function renderSide() {
 
 function titleText() {
   if (query) return `Поиск: ${query}`;
-  const m = { matrix: 'Матрица', focus: 'Помодоро', habits: 'Привычки', today: 'Сегодня', tomorrow: 'Завтра', week: 'Ближайшие 7 дней', all: 'Все задачи', calendar: 'Календарь', done: 'Выполнено' };
+  const m = { stats: 'Статистика', settings: 'Настройки', matrix: 'Матрица', focus: 'Помодоро', habits: 'Привычки', today: 'Сегодня', tomorrow: 'Завтра', week: 'Ближайшие 7 дней', all: 'Все задачи', calendar: 'Календарь', done: 'Выполнено' };
   return m[view] || list(view.slice(5)).name;
 }
 
@@ -124,6 +126,12 @@ function renderCal() {
   const box = $('#calendar');
   box.hidden = view !== 'calendar' || !!query;
   if (box.hidden) return;
+  const seg = `<div class="seg"><button data-cmode="month" class="${calMode === 'month' ? 'on' : ''}">Месяц + день</button><button data-cmode="week" class="${calMode === 'week' ? 'on' : ''}">Неделя</button></div>`;
+  if (calMode === 'week') {
+    const w = weekDays(), a = parse(w[0]), b = parse(w[6]);
+    box.innerHTML = `${seg}<div class="cal-head"><button data-wk="-1">‹</button><span>${a.getDate()} ${MONTHS[a.getMonth()].slice(0, 3).toLowerCase()} – ${b.getDate()} ${MONTHS[b.getMonth()].slice(0, 3).toLowerCase()} ${b.getFullYear()}</span><button data-wk="1">›</button></div>`;
+    return;
+  }
   const y = calMonth.getFullYear(), m = calMonth.getMonth();
   const first = (new Date(y, m, 1).getDay() + 6) % 7;
   const start = addDays(new Date(y, m, 1), -first);
@@ -133,7 +141,7 @@ function renderCal() {
     const d = addDays(start, i), s = ymd(d);
     cells += `<button class="day ${d.getMonth() !== m ? 'other' : ''} ${s === today() ? 'today' : ''} ${s === calDay ? 'sel' : ''} ${has.has(s) ? 'has' : ''}" data-day="${s}">${d.getDate()}<i></i></button>`;
   }
-  box.innerHTML = `<div class="cal-head"><button data-cal="-1">‹</button><span>${MONTHS[m]} ${y}</span><button data-cal="1">›</button></div><div class="cal-grid">${cells}</div>`;
+  box.innerHTML = `${seg}<div class="cal-head"><button data-cal="-1">‹</button><span>${MONTHS[m]} ${y}</span><button data-cal="1">›</button></div><div class="cal-grid">${cells}</div>`;
 }
 
 function renderDetail() {
@@ -391,12 +399,14 @@ setInterval(checkReminders, 20000);
 
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
 
-// ---------- day timeline (по часам) ----------
+// ---------- timeline: day / week by hours ----------
 const HOUR = 56;
-let tlDay = null, drag = null;
+let tlKey = null, drag = null;
+let calMode = (() => { try { return localStorage.getItem('doer.calmode') || 'month'; } catch (e) { return 'month'; } })();
 const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
 const fromMin = m => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
 const nowMin = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
+const W = '(100% - 56px)';
 function layout(ev) {
   let cols = [], cluster = [], end = -1;
   const fin = () => cluster.forEach(o => o.n = cols.length);
@@ -407,47 +417,61 @@ function layout(ev) {
   }
   fin();
 }
+function weekDays() { const d = parse(calDay), mon = addDays(d, -((d.getDay() + 6) % 7)); return [...Array(7)].map((_, i) => ymd(addDays(mon, i))); }
+const tlDays = () => calMode === 'week' ? weekDays() : [calDay];
 function renderTimeline() {
   const box = $('#timeline');
   box.hidden = view !== 'calendar' || !!query;
-  if (box.hidden) { tlDay = null; return; }
+  if (box.hidden) { tlKey = null; return; }
   if (drag) return;
+  const days = tlDays(), D = days.length, key = calMode + days[0], t = today();
   const prev = box.querySelector('.tl-scroll');
-  const keep = prev && tlDay === calDay ? prev.scrollTop : null;
-  const ev = state.tasks.filter(x => x.date === calDay && x.time).map(x => { const s = toMin(x.time); return { x, s, e: Math.min(1440, s + (x.dur || 60)) }; }).sort((a, b) => a.s - b.s || b.e - a.e);
-  layout(ev);
-  let hours = '';
+  const keep = prev && tlKey === key ? prev.scrollTop : null;
+  let hours = '', blocks = '', now = '', cols = '';
   for (let h = 0; h < 24; h++) hours += `<div class="tl-h" style="top:${h * HOUR}px"><span>${pad(h)}:00</span></div>`;
-  const blocks = ev.map(o => `<div class="tl-ev ${o.x.done ? 'done' : ''} ${o.x.id === selId ? 'sel' : ''}" data-ev="${o.x.id}" style="top:${o.s / 60 * HOUR}px;height:${Math.max(18, (o.e - o.s) / 60 * HOUR - 2)}px;left:calc(52px + (100% - 56px) * ${o.col} / ${o.n});width:calc((100% - 56px) / ${o.n} - 3px);--c:${list(o.x.listId).color}"><b>${esc(o.x.title || 'Без названия')}</b><span>${o.x.time}–${fromMin(o.e)}</span><i class="rz" data-rz="${o.x.id}"></i></div>`).join('');
-  const now = calDay === today() ? `<div class="tl-now" style="top:${nowMin() / 60 * HOUR}px"></div>` : '';
-  box.innerHTML = `<div class="tl-title">${dateLabel(calDay)} — по часам<small>Зажмите пустое место (или потяните), чтобы добавить задачу. Зажмите задачу, чтобы перенести; тяните за нижний край, чтобы изменить длительность.</small></div><div class="tl-scroll"><div class="tl-grid" style="height:${24 * HOUR}px">${hours}${now}${blocks}</div></div>`;
-  box.querySelector('.tl-scroll').scrollTop = keep ?? Math.max(0, (calDay === today() ? nowMin() - 90 : 8 * 60) / 60 * HOUR);
-  tlDay = calDay;
+  for (let i = D > 1 ? 0 : 1; i < D; i++) cols += `<div class="tl-col" style="left:calc(52px + ${W} * ${i / D})"></div>`;
+  days.forEach((d, di) => {
+    const ev = state.tasks.filter(x => x.date === d && x.time).map(x => { const s = toMin(x.time); return { x, s, e: Math.min(1440, s + (x.dur || 60)) }; }).sort((a, b) => a.s - b.s || b.e - a.e);
+    layout(ev);
+    blocks += ev.map(o => `<div class="tl-ev ${D > 1 ? 'narrow' : ''} ${o.x.done ? 'done' : ''} ${o.x.id === selId ? 'sel' : ''}" data-ev="${o.x.id}" style="top:${o.s / 60 * HOUR}px;height:${Math.max(18, (o.e - o.s) / 60 * HOUR - 2)}px;left:calc(52px + ${W} * ${(di + o.col / o.n) / D});width:calc(${W} / ${D * o.n} - 3px);--c:${list(o.x.listId).color}"><b>${esc(o.x.title || 'Без названия')}</b><span>${o.x.time}–${fromMin(o.e)}</span><i class="rz" data-rz="${o.x.id}"></i></div>`).join('');
+    if (d === t) now = `<div class="tl-now" style="top:${nowMin() / 60 * HOUR}px;left:calc(48px + ${W} * ${di / D});width:calc(${W} / ${D} + 4px)"></div>`;
+  });
+  let head = '';
+  if (D > 1) head = `<div class="tl-days"><div></div>${days.map(d => { const dd = parse(d), ad = state.tasks.filter(x => x.date === d && !x.time && !x.done); return `<div class="tl-day ${d === t ? 'today' : ''}"><button data-wday="${d}"><small>${WD[dd.getDay()]}</small><b>${dd.getDate()}</b></button>${ad.slice(0, 2).map(x => `<span class="chip" data-chip="${x.id}">${esc(x.title)}</span>`).join('')}${ad.length > 2 ? `<span class="chip more" data-wday="${d}">+${ad.length - 2}</span>` : ''}</div>`; }).join('')}</div>`;
+  const title = D > 1 ? '' : `<div class="tl-title">${dateLabel(calDay)} — по часам<small>Зажмите пустое место (или потяните), чтобы добавить задачу. Зажмите задачу, чтобы перенести; тяните за нижний край, чтобы изменить длительность.</small></div>`;
+  box.innerHTML = `${title}<div class="tl-scroll ${D > 1 ? 'week' : ''}">${head}<div class="tl-grid" style="height:${24 * HOUR}px">${hours}${cols}${now}${blocks}</div></div>`;
+  box.querySelector('.tl-scroll').scrollTop = keep ?? Math.max(0, (days.includes(t) ? nowMin() - 90 : 8 * 60) / 60 * HOUR);
+  tlKey = key;
 }
 const tlMin = (y, grid) => (y - grid.getBoundingClientRect().top) / HOUR * 60;
 const snapM = m => Math.max(0, Math.min(1440 - 15, Math.floor(m / 15) * 15));
+function dayAt(x, grid) { const r = grid.getBoundingClientRect(), D = tlDays().length; return Math.max(0, Math.min(D - 1, Math.floor((x - r.left - 52) / ((r.width - 56) / D)))); }
+const colLeft = di => `calc(52px + ${W} * ${di / tlDays().length})`;
+const colWidth = () => `calc(${W} / ${tlDays().length} - 3px)`;
 function activate() {
   if (!drag) return;
   drag.active = true;
   if (navigator.vibrate) navigator.vibrate(15);
   if (drag.kind === 'new') {
-    drag.el = document.createElement('div'); drag.el.className = 'tl-ghost'; drag.grid.appendChild(drag.el);
+    drag.el = document.createElement('div'); drag.el.className = 'tl-ghost';
+    drag.el.style.left = colLeft(drag.di); drag.el.style.width = colWidth(); drag.el.style.right = 'auto';
+    drag.grid.appendChild(drag.el);
     drag.a = drag.start; drag.b = drag.start + 60; paintGhost();
   } else drag.el.classList.add('dragging');
 }
 function paintGhost() { drag.el.style.top = drag.a / 60 * HOUR + 'px'; drag.el.style.height = (drag.b - drag.a) / 60 * HOUR + 'px'; drag.el.textContent = `${fromMin(drag.a)}–${fromMin(drag.b)}`; }
-function createAt(start, dur) {
-  const x = { id: uid(), title: 'Новая задача', notes: '', date: calDay, time: fromMin(start), dur, prio: 0, listId: 'inbox', done: false, doneAt: null, subs: [], created: Date.now(), repeat: '', remind: '' };
+function createAt(start, dur, date) {
+  const x = { id: uid(), title: 'Новая задача', notes: '', date: date || calDay, time: fromMin(start), dur, prio: 0, listId: 'inbox', done: false, doneAt: null, subs: [], created: Date.now(), repeat: '', remind: '' };
   state.tasks.push(x); selId = x.id; touch();
   const i = $('#dTitle'); if (i) { i.focus(); i.select(); }
 }
 $('#timeline').addEventListener('pointerdown', e => {
   const grid = e.target.closest('.tl-grid'); if (!grid || e.button > 0) return;
   const rz = e.target.closest('[data-rz]'), evEl = e.target.closest('[data-ev]'), m = tlMin(e.clientY, grid);
-  drag = { grid, x0: e.clientX, y0: e.clientY, touch: e.pointerType !== 'mouse', active: false, scroll: grid.parentElement };
+  drag = { grid, x0: e.clientX, y0: e.clientY, touch: e.pointerType !== 'mouse', active: false, scroll: grid.closest('.tl-scroll'), days: tlDays() };
   if (rz) { drag.kind = 'resize'; drag.task = task(rz.dataset.rz); drag.el = rz.parentElement; activate(); e.preventDefault(); return; }
-  if (evEl) { drag.kind = 'move'; drag.task = task(evEl.dataset.ev); drag.el = evEl; drag.off = m - toMin(drag.task.time); }
-  else { drag.kind = 'new'; drag.start = snapM(m); }
+  if (evEl) { drag.kind = 'move'; drag.task = task(evEl.dataset.ev); drag.el = evEl; drag.off = m - toMin(drag.task.time); drag.di = drag.days.indexOf(drag.task.date); }
+  else { drag.kind = 'new'; drag.start = snapM(m); drag.di = dayAt(e.clientX, grid); }
   if (drag.touch) drag.timer = setTimeout(activate, 350); else e.preventDefault();
 });
 window.addEventListener('pointermove', e => {
@@ -460,7 +484,13 @@ window.addEventListener('pointermove', e => {
   e.preventDefault();
   const m = tlMin(e.clientY, drag.grid), t = drag.task;
   if (drag.kind === 'new') { const c = snapM(m); drag.a = Math.min(drag.start, c); drag.b = Math.max(drag.start, c) + 15; paintGhost(); }
-  if (drag.kind === 'move') { const dur = t.dur || 60; drag.ns = Math.max(0, Math.min(1440 - Math.min(dur, 60), Math.round((m - drag.off) / 15) * 15)); drag.el.style.top = drag.ns / 60 * HOUR + 'px'; drag.el.querySelector('span').textContent = `${fromMin(drag.ns)}–${fromMin(Math.min(1440, drag.ns + dur))}`; }
+  if (drag.kind === 'move') {
+    const dur = t.dur || 60;
+    drag.ns = Math.max(0, Math.min(1440 - Math.min(dur, 60), Math.round((m - drag.off) / 15) * 15));
+    drag.el.style.top = drag.ns / 60 * HOUR + 'px';
+    drag.el.querySelector('span').textContent = `${fromMin(drag.ns)}–${fromMin(Math.min(1440, drag.ns + dur))}`;
+    if (drag.days.length > 1) { const di = dayAt(e.clientX, drag.grid); if (di !== drag.di) { drag.di = di; drag.nday = drag.days[di]; drag.el.style.left = colLeft(di); drag.el.style.width = colWidth(); } }
+  }
   if (drag.kind === 'resize') { const s0 = toMin(t.time); const end = Math.max(s0 + 15, Math.min(1440, Math.round(m / 15) * 15)); drag.nd = end - s0; drag.el.style.height = Math.max(18, drag.nd / 60 * HOUR - 2) + 'px'; drag.el.querySelector('span').textContent = `${t.time}–${fromMin(end)}`; }
   const r = drag.scroll.getBoundingClientRect();
   if (e.clientY < r.top + 30) drag.scroll.scrollTop -= 10; else if (e.clientY > r.bottom - 30) drag.scroll.scrollTop += 10;
@@ -469,13 +499,14 @@ function endDrag(e, cancelled) {
   if (!drag) return;
   clearTimeout(drag.timer); const d = drag; drag = null;
   if (cancelled) return render();
+  const date = d.days[d.di];
   if (!d.active) {
     if (d.kind === 'move') { selId = d.task.id; render(); }
-    else if (d.kind === 'new' && !d.touch) createAt(d.start, 60);
+    else if (d.kind === 'new' && !d.touch) createAt(d.start, 60, date);
     return;
   }
-  if (d.kind === 'new') { d.el.remove(); createAt(d.a, d.b - d.a); }
-  else if (d.kind === 'move' && d.ns != null) { d.task.time = fromMin(d.ns); touch(); }
+  if (d.kind === 'new') { d.el.remove(); createAt(d.a, d.b - d.a, date); }
+  else if (d.kind === 'move' && (d.ns != null || d.nday)) { if (d.ns != null) d.task.time = fromMin(d.ns); if (d.nday) d.task.date = d.nday; touch(); }
   else if (d.kind === 'resize' && d.nd) { d.task.dur = d.nd; touch(); }
   else render();
 }
@@ -483,10 +514,20 @@ window.addEventListener('pointerup', e => endDrag(e, false));
 window.addEventListener('pointercancel', e => endDrag(e, !drag || !drag.active));
 document.addEventListener('touchmove', e => { if (drag && drag.active) e.preventDefault(); }, { passive: false });
 setInterval(() => { if (view === 'calendar' && !drag) renderTimeline(); }, 60000);
+document.addEventListener('click', e => {
+  const cm = e.target.closest('[data-cmode]');
+  if (cm) { calMode = cm.dataset.cmode; try { localStorage.setItem('doer.calmode', calMode); } catch (er) {} return render(); }
+  const wk = e.target.closest('[data-wk]');
+  if (wk) { calDay = ymd(addDays(parse(calDay), 7 * +wk.dataset.wk)); const d = parse(calDay); calMonth = new Date(d.getFullYear(), d.getMonth(), 1); return render(); }
+  const wd = e.target.closest('[data-wday]');
+  if (wd) { calDay = wd.dataset.wday; calMode = 'month'; const d = parse(calDay); calMonth = new Date(d.getFullYear(), d.getMonth(), 1); return render(); }
+  const ch = e.target.closest('[data-chip]');
+  if (ch) { selId = ch.dataset.chip; render(); }
+});
 
 
 // ---------- premium: matrix, pomodoro, habits ----------
-const EXTRA = ['matrix', 'focus', 'habits'];
+const EXTRA = ['matrix', 'focus', 'habits', 'stats', 'settings'];
 const QUADS = [[1, 'Срочно и важно', '#e5484d'], [2, 'Важно, не срочно', '#f5a524'], [3, 'Срочно, не важно', '#4772fa'], [0, 'Не срочно и не важно', '#30a46c']];
 function addToQuad(text, prio) {
   const p = parseQuick(text); if (!p.title) return;
@@ -604,12 +645,80 @@ document.addEventListener('click', e => {
   }
 });
 
+// Statistics
+function renderStats() {
+  const t = today(), done = state.tasks.filter(x => x.done && x.doneAt), open = state.tasks.filter(x => !x.done);
+  const dayDone = d => done.filter(x => ymd(new Date(x.doneAt)) === d).length;
+  const days = [...Array(14)].map((_, i) => ymd(addDays(new Date(), i - 13)));
+  const mx = Math.max(1, ...days.map(dayDone));
+  const week = days.slice(7), weekDone = week.reduce((a, d) => a + dayDone(d), 0);
+  const planned = state.tasks.filter(x => x.date && x.date >= week[0] && x.date <= t);
+  const rate = planned.length ? Math.round(planned.filter(x => x.done).length / planned.length * 100) : 0;
+  const focusWeek = state.focus.filter(f => ymd(new Date(f.start)) >= week[0]).reduce((a, f) => a + f.mins, 0);
+  const best = state.habits.reduce((a, h) => Math.max(a, streak(h)), 0);
+  const card = (v, n) => `<div class="st"><b>${v}</b><span>${n}</span></div>`;
+  return `<div class="stats s4">${card(dayDone(t), 'выполнено сегодня')}${card(weekDone, 'за 7 дней')}${card(rate + '%', 'план недели выполнен')}${card(open.filter(x => x.date && x.date < t).length, 'просрочено')}</div>
+    <h3 class="sh">Выполнено по дням (2 недели)</h3>
+    <div class="bars acc">${days.map(d => `<div class="bar"><i style="height:${dayDone(d) / mx * 100}%"></i><small>${parse(d).getDate()}</small><em>${dayDone(d) || ''}</em></div>`).join('')}</div>
+    <h3 class="sh">По спискам</h3>
+    <div class="lists-st">${state.lists.map(l => { const all = state.tasks.filter(x => x.listId === l.id), dn = all.filter(x => x.done).length; return `<div class="ls"><span class="dot" style="background:${l.color}"></span><span class="ln">${esc(l.name)}</span><span class="lp"><i style="width:${all.length ? dn / all.length * 100 : 0}%;background:${l.color}"></i></span><span class="lc">${dn}/${all.length}</span></div>`; }).join('')}</div>
+    <div class="stats">${card(done.length, 'всего выполнено')}${card(focusWeek, 'минут фокуса за неделю')}${card('🔥 ' + best, 'лучшая серия привычек')}</div>`;
+}
+
+// Settings: theme + backup
+const TKEY = 'doer.theme';
+const ACCENTS = ['#4772fa', '#e5484d', '#30a46c', '#8e4ec6', '#f76b15', '#e93d82', '#0091b2', '#64748b'];
+let theme = Object.assign({ mode: 'auto', accent: '#4772fa' }, (() => { try { return JSON.parse(localStorage.getItem(TKEY)) || {}; } catch (e) { return {}; } })());
+function applyTheme() {
+  const r = document.documentElement;
+  if (theme.mode === 'auto') r.removeAttribute('data-theme'); else r.dataset.theme = theme.mode;
+  r.style.setProperty('--accent', theme.accent);
+  const m = document.querySelector('meta[name=theme-color]'); if (m) m.content = theme.accent;
+}
+applyTheme();
+function renderSettings() {
+  return `<div class="set">
+    <h3 class="sh">Тема</h3>
+    <div class="seg big">${[['auto', '🌗 Как в системе'], ['light', '☀️ Светлая'], ['dark', '🌙 Тёмная']].map(([v, n]) => `<button data-tmode="${v}" class="${theme.mode === v ? 'on' : ''}">${n}</button>`).join('')}</div>
+    <h3 class="sh">Цвет</h3>
+    <div class="sw">${ACCENTS.map(c => `<button data-acc="${c}" class="${theme.accent === c ? 'on' : ''}" style="background:${c}" aria-label="${c}"></button>`).join('')}</div>
+    <h3 class="sh">Резервная копия</h3>
+    <p class="hint">Задачи хранятся только на этом устройстве. Сохраняйте копию в файл, чтобы не потерять их, или чтобы перенести на другое устройство.</p>
+    <div class="p-btns" style="justify-content:flex-start"><button class="btn primary" id="bkSave">⬇ Сохранить копию</button><button class="btn" id="bkLoad">⬆ Загрузить из файла</button></div>
+    <input type="file" id="bkFile" accept=".json,application/json" hidden>
+  </div>`;
+}
+document.addEventListener('click', e => {
+  const tm = e.target.closest('[data-tmode]'), ac = e.target.closest('[data-acc]');
+  if (tm || ac) {
+    if (tm) theme.mode = tm.dataset.tmode; if (ac) theme.accent = ac.dataset.acc;
+    try { localStorage.setItem(TKEY, JSON.stringify(theme)); } catch (er) {}
+    applyTheme(); render();
+  }
+  if (e.target.id === 'bkSave') {
+    const blob = new Blob([JSON.stringify(state, null, 1)], { type: 'application/json' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `doer-${today()}.json`;
+    document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+  if (e.target.id === 'bkLoad') $('#bkFile').click();
+});
+document.addEventListener('change', e => {
+  if (e.target.id !== 'bkFile' || !e.target.files[0]) return;
+  e.target.files[0].text().then(txt => {
+    const d = JSON.parse(txt);
+    if (!d || !Array.isArray(d.tasks)) throw new Error();
+    if (!confirm(`Загрузить копию: ${d.tasks.length} задач? Текущие задачи сохранятся, копия добавится к ним.`)) return;
+    mergeInto({ dead: d.dead || {}, lists: d.lists || [], tasks: d.tasks, habits: d.habits || [], focus: d.focus || [] });
+    touch(); toast('✓ Копия загружена');
+  }).catch(() => alert('Не получилось прочитать файл'));
+});
+
 function renderExtra() {
   const box = $('#extra');
   const on = EXTRA.includes(view) && !query;
   box.hidden = !on; if (!on) return;
   if (view === 'focus' && document.activeElement && ['pTask', 'pLen'].includes(document.activeElement.id)) return;
-  box.innerHTML = view === 'matrix' ? renderMatrix() : view === 'focus' ? renderFocus() : renderHabits();
+  box.innerHTML = view === 'matrix' ? renderMatrix() : view === 'focus' ? renderFocus() : view === 'stats' ? renderStats() : view === 'settings' ? renderSettings() : renderHabits();
 }
 
 render();
