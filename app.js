@@ -20,10 +20,18 @@ let calDay = today();
 let query = '';
 
 function load() {
-  try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.tasks) return s; } catch (e) {}
-  return { lists: [{ id: 'inbox', name: 'Входящие', color: COLORS[0] }, { id: uid(), name: 'Работа', color: COLORS[2] }, { id: uid(), name: 'Личное', color: COLORS[3] }], tasks: [] };
+  try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.tasks) { s.dead = s.dead || {}; return s; } } catch (e) {}
+  return { dead: {}, lists: [{ id: 'inbox', name: 'Входящие', color: COLORS[0] }, { id: uid(), name: 'Работа', color: COLORS[2] }, { id: uid(), name: 'Личное', color: COLORS[3] }], tasks: [] };
 }
-const save = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} };
+const snap = {};
+function stamp() {
+  for (const it of [...state.lists, ...state.tasks]) {
+    const j = JSON.stringify({ ...it, updated: 0 });
+    if (snap[it.id] !== j) { if (snap[it.id] !== undefined || !it.updated) it.updated = Date.now(); snap[it.id] = j; }
+  }
+}
+const save = (push = true) => { stamp(); try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} if (push) schedulePush(); };
+stamp();
 const task = id => state.tasks.find(t => t.id === id);
 const list = id => state.lists.find(l => l.id === id) || state.lists[0];
 
@@ -65,6 +73,7 @@ function renderSide() {
     ['calendar', '📆', 'Календарь', ''],
     ['done', '✅', 'Выполнено', '']
   ];
+  $('#syncBtn').textContent = syncLabel();
   $('#smart').innerHTML = smart.map(([id, ic, n, c]) => `<button class="nav ${view === id ? 'active' : ''}" data-view="${id}"><span>${ic}</span>${n}<span class="cnt">${c}</span></button>`).join('');
   $('#lists').innerHTML = state.lists.map(l => `<button class="nav ${view === 'list:' + l.id ? 'active' : ''}" data-view="list:${l.id}" data-lid="${l.id}"><span class="dot" style="background:${l.color}"></span>${esc(l.name)}<span class="cnt">${open.filter(x => x.listId === l.id).length || ''}</span></button>`).join('');
 }
@@ -133,6 +142,8 @@ function renderDetail() {
     <div class="row two"><div class="row" style="margin:0"><label>Дата</label><input type="date" id="dDate" value="${x.date || ''}"></div>
       <div class="row" style="margin:0"><label>Время</label><input type="time" id="dTime" value="${x.time || ''}"></div></div>
     <div class="row"><label>Приоритет</label><div class="prio">${[[0, 'Нет'], [3, 'Низкий'], [2, 'Средний'], [1, 'Высокий']].map(([p, n]) => `<button data-p="${p}" class="${x.prio === p ? 'on' : ''}">${n}</button>`).join('')}</div></div>
+    <div class="two"><div class="row"><label>Повтор</label><select id="dRepeat">${[['', 'Нет'], ['daily', 'Каждый день'], ['weekdays', 'По будням'], ['weekly', 'Каждую неделю'], ['monthly', 'Каждый месяц'], ['yearly', 'Каждый год']].map(([v, n]) => `<option value="${v}" ${(x.repeat || '') === v ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
+    <div class="row"><label>Напоминание</label><select id="dRemind">${[['', 'Нет'], ['0', 'В момент'], ['10', 'За 10 мин'], ['60', 'За 1 час'], ['1440', 'За 1 день']].map(([v, n]) => `<option value="${v}" ${(x.remind ?? '') === v ? 'selected' : ''}>${n}</option>`).join('')}</select></div></div>
     <div class="row"><label>Список</label><select id="dList">${state.lists.map(l => `<option value="${l.id}" ${l.id === x.listId ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select></div>
     <div class="row"><label>Подзадачи</label>
       ${x.subs.map(s => `<div class="sub ${s.done ? 'done' : ''}"><input type="checkbox" data-sc="${s.id}" ${s.done ? 'checked' : ''}><input type="text" data-st="${s.id}" value="${esc(s.t)}"><button class="x" data-sx="${s.id}">✕</button></div>`).join('')}
@@ -215,7 +226,7 @@ document.addEventListener('click', e => {
   if (!x) return;
   if (t.id === 'dClose') { selId = null; render(); }
   if (t.id === 'dDone') toggle(x.id);
-  if (t.id === 'dDel') { if (confirm('Удалить задачу?')) { state.tasks = state.tasks.filter(y => y.id !== x.id); selId = null; touch(); } }
+  if (t.id === 'dDel') { if (confirm('Удалить задачу?')) { state.dead[x.id] = Date.now(); state.tasks = state.tasks.filter(y => y.id !== x.id); selId = null; touch(); } }
   if (t.dataset.p !== undefined) { x.prio = +t.dataset.p; touch(); }
   if (t.dataset.sx) { x.subs = x.subs.filter(s => s.id !== t.dataset.sx); touch(); }
 });
@@ -227,7 +238,7 @@ document.addEventListener('contextmenu', e => {
   const l = list(b.dataset.lid);
   const n = prompt('Переименовать список (пусто — удалить)', l.name);
   if (n === null) return;
-  if (!n.trim()) { if (confirm(`Удалить список «${l.name}» и его задачи?`)) { state.tasks = state.tasks.filter(t => t.listId !== l.id); state.lists = state.lists.filter(x => x !== l); if (view === 'list:' + l.id) view = 'today'; selId = null; touch(); } }
+  if (!n.trim()) { if (confirm(`Удалить список «${l.name}» и его задачи?`)) { state.tasks.filter(t => t.listId === l.id).forEach(t => state.dead[t.id] = Date.now()); state.dead[l.id] = Date.now(); state.tasks = state.tasks.filter(t => t.listId !== l.id); state.lists = state.lists.filter(x => x !== l); if (view === 'list:' + l.id) view = 'today'; selId = null; touch(); } }
   else { l.name = n.trim(); touch(); }
 });
 // long-press for touch: rename/delete list
@@ -237,7 +248,17 @@ let lp; document.addEventListener('touchstart', e => { const b = e.target.closes
 function toggle(id) {
   const x = task(id); if (!x) return;
   x.done = !x.done; x.doneAt = x.done ? Date.now() : null;
-  if (x.done && x.repeat) {}
+  if (x.done && x.repeat) {
+    const base = x.date ? parse(x.date) : new Date();
+    const n = new Date(base);
+    if (x.repeat === 'daily') n.setDate(n.getDate() + 1);
+    else if (x.repeat === 'weekdays') { do n.setDate(n.getDate() + 1); while ([0, 6].includes(n.getDay())); }
+    else if (x.repeat === 'weekly') n.setDate(n.getDate() + 7);
+    else if (x.repeat === 'monthly') n.setMonth(n.getMonth() + 1);
+    else if (x.repeat === 'yearly') n.setFullYear(n.getFullYear() + 1);
+    state.tasks.push({ ...x, id: uid(), date: ymd(n), done: false, doneAt: null, repeat: x.repeat, created: Date.now(), subs: x.subs.map(s => ({ ...s, id: uid(), done: false })) });
+  }
+  if (!x.done) { /* un-completing leaves any generated occurrence in place */ }
   touch();
 }
 
@@ -254,6 +275,8 @@ document.addEventListener('change', e => {
   if (!x) return;
   if (t.id === 'dDate') { x.date = t.value || null; touch(); }
   if (t.id === 'dTime') { x.time = t.value || null; touch(); }
+  if (t.id === 'dRepeat') { x.repeat = t.value; touch(); }
+  if (t.id === 'dRemind') { x.remind = t.value; touch(); if (t.value !== '') askNotify(); }
   if (t.id === 'dList') { x.listId = t.value; touch(); }
   if (t.dataset.sc) { const s = x.subs.find(s => s.id === t.dataset.sc); s.done = t.checked; touch(); }
 });
@@ -269,5 +292,92 @@ $('#quick').addEventListener('submit', e => {
   const i = $('#quickInput'); addTask(i.value); i.value = ''; i.focus();
 });
 
+
+// ---------- sync ----------
+const CFG = 'doer.sync';
+const cfg = () => { try { return JSON.parse(localStorage.getItem(CFG)) || {}; } catch (e) { return {}; } };
+let syncState = 'off', pushT = null, syncing = false, again = false;
+function syncLabel() {
+  return { off: '☁ Синхронизация выключена', ok: '☁ Синхронизировано', busy: '☁ Синхронизация…', err: '⚠ Нет связи с сервером' }[syncState];
+}
+function baseUrl() { const c = cfg(); return (c.url || (location.protocol.startsWith('http') ? '' : '')).replace(/\/$/, ''); }
+function schedulePush() { if (!cfg().key) return; clearTimeout(pushT); pushT = setTimeout(sync, 800); }
+function mergeInto(remote) {
+  const dead = { ...state.dead };
+  for (const k in remote.dead || {}) dead[k] = Math.max(dead[k] || 0, remote.dead[k]);
+  const merge = (a, b) => {
+    const m = new Map();
+    for (const it of [...a, ...b]) { const o = m.get(it.id); if (!o || (it.updated || 0) > (o.updated || 0)) m.set(it.id, it); }
+    return [...m.values()].filter(it => (dead[it.id] || 0) < (it.updated || 1));
+  };
+  const lists = merge(state.lists, remote.lists || []);
+  if (!lists.some(l => l.id === 'inbox')) lists.unshift({ id: 'inbox', name: 'Входящие', color: COLORS[0], updated: 1 });
+  state = { dead, lists, tasks: merge(state.tasks, remote.tasks || []) };
+  if (view.startsWith('list:') && !state.lists.some(l => 'list:' + l.id === view)) view = 'today';
+  if (selId && !task(selId)) selId = null;
+}
+async function sync() {
+  const c = cfg(); if (!c.key) { syncState = 'off'; return renderSide(); }
+  if (syncing) { again = true; return; }
+  syncing = true; syncState = 'busy'; renderSide();
+  try {
+    stamp();
+    const r = await fetch(baseUrl() + '/api/sync', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sync-Key': c.key }, body: JSON.stringify(state) });
+    if (!r.ok) throw new Error(r.status);
+    const focus = document.activeElement && document.activeElement.id;
+    mergeInto(await r.json());
+    for (const k in snap) delete snap[k];
+    stamp(); save(false);
+    syncState = 'ok';
+    if (!['dTitle', 'dNotes', 'dSub', 'quickInput', 'search'].includes(focus) && !(document.activeElement || {}).dataset?.st) render(); else { renderSide(); renderTasks(); renderCal(); }
+  } catch (e) { syncState = 'err'; renderSide(); }
+  syncing = false;
+  if (again) { again = false; schedulePush(); }
+}
+$('#syncBtn').addEventListener('click', () => {
+  const c = cfg();
+  const key = prompt('Ключ синхронизации (одинаковый на всех устройствах, минимум 8 символов, держите в секрете).\nПусто — выключить синхронизацию.', c.key || '');
+  if (key === null) return;
+  const next = { key: key.trim(), url: c.url || '' };
+  if (!location.protocol.startsWith('http')) { const u = prompt('Адрес сервера (например https://doer.example.com)', next.url); if (u === null) return; next.url = u.trim(); }
+  if (next.key && next.key.length < 8) return alert('Ключ слишком короткий');
+  localStorage.setItem(CFG, JSON.stringify(next));
+  sync();
+});
+window.addEventListener('online', sync);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
+setInterval(() => { if (!document.hidden) sync(); }, 30000);
+
+// ---------- reminders ----------
+const FIRED = 'doer.fired';
+const fired = new Set(JSON.parse(localStorage.getItem(FIRED) || '[]'));
+function askNotify() { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); }
+function toast(msg) {
+  const d = document.createElement('div'); d.className = 'toast'; d.textContent = msg; document.body.appendChild(d); setTimeout(() => d.remove(), 8000);
+}
+async function notify(x) {
+  const body = (x.time ? x.time + ' · ' : '') + 'Напоминание';
+  toast('⏰ ' + x.title + (x.time ? ' — ' + x.time : ''));
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try { const reg = await navigator.serviceWorker?.getRegistration(); if (reg) return reg.showNotification(x.title, { body, tag: x.id, icon: 'icon.svg' }); } catch (e) {}
+    new Notification(x.title, { body, tag: x.id });
+  }
+}
+function checkReminders() {
+  const now = Date.now(); let changed = false;
+  for (const x of state.tasks) {
+    if (x.done || !x.date || x.remind === undefined || x.remind === '') continue;
+    const [h, m] = (x.time || '09:00').split(':').map(Number);
+    const d = parse(x.date); d.setHours(h, m, 0, 0);
+    const due = d.getTime() - +x.remind * 60000, key = x.id + '|' + x.date + '|' + (x.time || '') + '|' + x.remind;
+    if (now >= due && now - due < 12 * 3600e3 && !fired.has(key)) { fired.add(key); changed = true; notify(x); }
+  }
+  if (changed) try { localStorage.setItem(FIRED, JSON.stringify([...fired].slice(-300))); } catch (e) {}
+}
+setInterval(checkReminders, 20000);
+
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
 render();
+checkReminders();
+sync();
 setInterval(renderSide, 60000);

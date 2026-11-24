@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Doer — планировщик дня</title>
 <link rel="stylesheet" href="style.css">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#4772fa">
+<meta name="apple-mobile-web-app-capable" content="yes">
 </head>
 <body>
 <div id="app">
@@ -13,6 +18,7 @@
     <nav id="smart"></nav>
     <div class="side-head"><span>Списки</span><button id="addList" title="Новый список">+</button></div>
     <nav id="lists"></nav>
+    <button class="nav" id="syncBtn" style="margin-top:16px;font-size:13px;color:var(--muted)"></button>
   </aside>
   <div id="scrim"></div>
   <main id="main">
