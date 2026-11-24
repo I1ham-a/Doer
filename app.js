@@ -54,7 +54,7 @@ function visible() {
   if (view === 'today') return r.filter(x => x.date && x.date <= t);
   if (view === 'tomorrow') return r.filter(x => x.date === tm);
   if (view === 'week') return r.filter(x => x.date && x.date <= w);
-  if (view === 'calendar') return r.filter(x => x.date === calDay);
+  if (view === 'calendar') return r.filter(x => x.date === calDay && !x.time);
   if (view.startsWith('list:')) return r.filter(x => x.listId === view.slice(5));
   return r;
 }
@@ -111,7 +111,8 @@ function renderTasks() {
       const head = /^\d/.test(k) ? dateLabel(k) : k;
       html += `<div class="group">${single && /^\d/.test(k) ? '' : `<h3 class="${k === 'Просрочено' ? 'over' : ''}">${head}</h3>`}${groups.get(k).map(taskRow).join('')}</div>`;
     }
-  } else html = `<div class="group">${items.map(taskRow).join('')}</div>`;
+  } else html = `<div class="group">${view === 'calendar' ? '<h3>Без времени</h3>' : ''}${items.map(taskRow).join('')}</div>`;
+  if (view === 'calendar' && !items.length && !query) { $('#tasks').innerHTML = ''; return; }
   $('#tasks').innerHTML = items.length ? html : `<div class="empty">Здесь пока пусто 🎉<br>Добавьте задачу выше</div>`;
 }
 function rank(k) { return k === 'Просрочено' ? 0 : /^\d/.test(k) ? 1 : k === 'Без даты' ? 2 : 3; }
@@ -142,6 +143,7 @@ function renderDetail() {
     <div class="row two"><div class="row" style="margin:0"><label>Дата</label><input type="date" id="dDate" value="${x.date || ''}"></div>
       <div class="row" style="margin:0"><label>Время</label><input type="time" id="dTime" value="${x.time || ''}"></div></div>
     <div class="row"><label>Приоритет</label><div class="prio">${[[0, 'Нет'], [3, 'Низкий'], [2, 'Средний'], [1, 'Высокий']].map(([p, n]) => `<button data-p="${p}" class="${x.prio === p ? 'on' : ''}">${n}</button>`).join('')}</div></div>
+    ${x.time ? `<div class="row"><label>Длительность</label><select id="dDur">${[15, 30, 45, 60, 90, 120, 180, 240, 480].map(m => `<option value="${m}" ${(x.dur || 60) === m ? 'selected' : ''}>${m < 60 ? m + ' мин' : (m / 60) + ' ч'}</option>`).join('')}</select></div>` : ''}
     <div class="two"><div class="row"><label>Повтор</label><select id="dRepeat">${[['', 'Нет'], ['daily', 'Каждый день'], ['weekdays', 'По будням'], ['weekly', 'Каждую неделю'], ['monthly', 'Каждый месяц'], ['yearly', 'Каждый год']].map(([v, n]) => `<option value="${v}" ${(x.repeat || '') === v ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
     <div class="row"><label>Напоминание</label><select id="dRemind">${[['', 'Нет'], ['0', 'В момент'], ['10', 'За 10 мин'], ['60', 'За 1 час'], ['1440', 'За 1 день']].map(([v, n]) => `<option value="${v}" ${(x.remind ?? '') === v ? 'selected' : ''}>${n}</option>`).join('')}</select></div></div>
     <div class="row"><label>Список</label><select id="dList">${state.lists.map(l => `<option value="${l.id}" ${l.id === x.listId ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select></div>
@@ -157,11 +159,12 @@ function render() {
   $('#title').textContent = titleText();
   renderCal();
   renderTasks();
+  renderTimeline();
   renderDetail();
 }
 const touch = () => { save(); render(); };
 // Update list/sidebar without destroying the focused detail inputs
-const touchSoft = () => { save(); renderSide(); renderTasks(); renderCal(); };
+const touchSoft = () => { save(); renderSide(); renderTasks(); renderCal(); renderTimeline(); };
 
 // ---------- quick add parsing ----------
 function parseQuick(text) {
@@ -232,6 +235,7 @@ document.addEventListener('click', e => {
 });
 
 document.addEventListener('contextmenu', e => {
+  if (e.target.closest('#timeline')) { e.preventDefault(); return; }
   const b = e.target.closest('[data-lid]');
   if (!b || b.dataset.lid === 'inbox') return;
   e.preventDefault();
@@ -275,6 +279,7 @@ document.addEventListener('change', e => {
   if (!x) return;
   if (t.id === 'dDate') { x.date = t.value || null; touch(); }
   if (t.id === 'dTime') { x.time = t.value || null; touch(); }
+  if (t.id === 'dDur') { x.dur = +t.value; touch(); }
   if (t.id === 'dRepeat') { x.repeat = t.value; touch(); }
   if (t.id === 'dRemind') { x.remind = t.value; touch(); if (t.value !== '') askNotify(); }
   if (t.id === 'dList') { x.listId = t.value; touch(); }
@@ -377,6 +382,100 @@ function checkReminders() {
 setInterval(checkReminders, 20000);
 
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
+
+// ---------- day timeline (по часам) ----------
+const HOUR = 56;
+let tlDay = null, drag = null;
+const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+const fromMin = m => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+const nowMin = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
+function layout(ev) {
+  let cols = [], cluster = [], end = -1;
+  const fin = () => cluster.forEach(o => o.n = cols.length);
+  for (const o of ev) {
+    if (o.s >= end && cluster.length) { fin(); cluster = []; cols = []; }
+    let i = cols.findIndex(c => c <= o.s); if (i < 0) { i = cols.length; cols.push(0); }
+    cols[i] = o.e; o.col = i; cluster.push(o); end = Math.max(end, o.e);
+  }
+  fin();
+}
+function renderTimeline() {
+  const box = $('#timeline');
+  box.hidden = view !== 'calendar' || !!query;
+  if (box.hidden) { tlDay = null; return; }
+  if (drag) return;
+  const prev = box.querySelector('.tl-scroll');
+  const keep = prev && tlDay === calDay ? prev.scrollTop : null;
+  const ev = state.tasks.filter(x => x.date === calDay && x.time).map(x => { const s = toMin(x.time); return { x, s, e: Math.min(1440, s + (x.dur || 60)) }; }).sort((a, b) => a.s - b.s || b.e - a.e);
+  layout(ev);
+  let hours = '';
+  for (let h = 0; h < 24; h++) hours += `<div class="tl-h" style="top:${h * HOUR}px"><span>${pad(h)}:00</span></div>`;
+  const blocks = ev.map(o => `<div class="tl-ev ${o.x.done ? 'done' : ''} ${o.x.id === selId ? 'sel' : ''}" data-ev="${o.x.id}" style="top:${o.s / 60 * HOUR}px;height:${Math.max(18, (o.e - o.s) / 60 * HOUR - 2)}px;left:calc(52px + (100% - 56px) * ${o.col} / ${o.n});width:calc((100% - 56px) / ${o.n} - 3px);--c:${list(o.x.listId).color}"><b>${esc(o.x.title || 'Без названия')}</b><span>${o.x.time}–${fromMin(o.e)}</span><i class="rz" data-rz="${o.x.id}"></i></div>`).join('');
+  const now = calDay === today() ? `<div class="tl-now" style="top:${nowMin() / 60 * HOUR}px"></div>` : '';
+  box.innerHTML = `<div class="tl-title">${dateLabel(calDay)} — по часам<small>Зажмите пустое место (или потяните), чтобы добавить задачу. Зажмите задачу, чтобы перенести; тяните за нижний край, чтобы изменить длительность.</small></div><div class="tl-scroll"><div class="tl-grid" style="height:${24 * HOUR}px">${hours}${now}${blocks}</div></div>`;
+  box.querySelector('.tl-scroll').scrollTop = keep ?? Math.max(0, (calDay === today() ? nowMin() - 90 : 8 * 60) / 60 * HOUR);
+  tlDay = calDay;
+}
+const tlMin = (y, grid) => (y - grid.getBoundingClientRect().top) / HOUR * 60;
+const snapM = m => Math.max(0, Math.min(1440 - 15, Math.floor(m / 15) * 15));
+function activate() {
+  if (!drag) return;
+  drag.active = true;
+  if (navigator.vibrate) navigator.vibrate(15);
+  if (drag.kind === 'new') {
+    drag.el = document.createElement('div'); drag.el.className = 'tl-ghost'; drag.grid.appendChild(drag.el);
+    drag.a = drag.start; drag.b = drag.start + 60; paintGhost();
+  } else drag.el.classList.add('dragging');
+}
+function paintGhost() { drag.el.style.top = drag.a / 60 * HOUR + 'px'; drag.el.style.height = (drag.b - drag.a) / 60 * HOUR + 'px'; drag.el.textContent = `${fromMin(drag.a)}–${fromMin(drag.b)}`; }
+function createAt(start, dur) {
+  const x = { id: uid(), title: 'Новая задача', notes: '', date: calDay, time: fromMin(start), dur, prio: 0, listId: 'inbox', done: false, doneAt: null, subs: [], created: Date.now(), repeat: '', remind: '' };
+  state.tasks.push(x); selId = x.id; touch();
+  const i = $('#dTitle'); if (i) { i.focus(); i.select(); }
+}
+$('#timeline').addEventListener('pointerdown', e => {
+  const grid = e.target.closest('.tl-grid'); if (!grid || e.button > 0) return;
+  const rz = e.target.closest('[data-rz]'), evEl = e.target.closest('[data-ev]'), m = tlMin(e.clientY, grid);
+  drag = { grid, x0: e.clientX, y0: e.clientY, touch: e.pointerType !== 'mouse', active: false, scroll: grid.parentElement };
+  if (rz) { drag.kind = 'resize'; drag.task = task(rz.dataset.rz); drag.el = rz.parentElement; activate(); e.preventDefault(); return; }
+  if (evEl) { drag.kind = 'move'; drag.task = task(evEl.dataset.ev); drag.el = evEl; drag.off = m - toMin(drag.task.time); }
+  else { drag.kind = 'new'; drag.start = snapM(m); }
+  if (drag.touch) drag.timer = setTimeout(activate, 350); else e.preventDefault();
+});
+window.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const dist = Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0);
+  if (!drag.active) {
+    if (drag.touch) { if (dist > 8) { clearTimeout(drag.timer); drag = null; } return; }
+    if (dist > 4) activate(); else return;
+  }
+  e.preventDefault();
+  const m = tlMin(e.clientY, drag.grid), t = drag.task;
+  if (drag.kind === 'new') { const c = snapM(m); drag.a = Math.min(drag.start, c); drag.b = Math.max(drag.start, c) + 15; paintGhost(); }
+  if (drag.kind === 'move') { const dur = t.dur || 60; drag.ns = Math.max(0, Math.min(1440 - Math.min(dur, 60), Math.round((m - drag.off) / 15) * 15)); drag.el.style.top = drag.ns / 60 * HOUR + 'px'; drag.el.querySelector('span').textContent = `${fromMin(drag.ns)}–${fromMin(Math.min(1440, drag.ns + dur))}`; }
+  if (drag.kind === 'resize') { const s0 = toMin(t.time); const end = Math.max(s0 + 15, Math.min(1440, Math.round(m / 15) * 15)); drag.nd = end - s0; drag.el.style.height = Math.max(18, drag.nd / 60 * HOUR - 2) + 'px'; drag.el.querySelector('span').textContent = `${t.time}–${fromMin(end)}`; }
+  const r = drag.scroll.getBoundingClientRect();
+  if (e.clientY < r.top + 30) drag.scroll.scrollTop -= 10; else if (e.clientY > r.bottom - 30) drag.scroll.scrollTop += 10;
+}, { passive: false });
+function endDrag(e, cancelled) {
+  if (!drag) return;
+  clearTimeout(drag.timer); const d = drag; drag = null;
+  if (cancelled) return render();
+  if (!d.active) {
+    if (d.kind === 'move') { selId = d.task.id; render(); }
+    else if (d.kind === 'new' && !d.touch) createAt(d.start, 60);
+    return;
+  }
+  if (d.kind === 'new') { d.el.remove(); createAt(d.a, d.b - d.a); }
+  else if (d.kind === 'move' && d.ns != null) { d.task.time = fromMin(d.ns); touch(); }
+  else if (d.kind === 'resize' && d.nd) { d.task.dur = d.nd; touch(); }
+  else render();
+}
+window.addEventListener('pointerup', e => endDrag(e, false));
+window.addEventListener('pointercancel', e => endDrag(e, !drag || !drag.active));
+document.addEventListener('touchmove', e => { if (drag && drag.active) e.preventDefault(); }, { passive: false });
+setInterval(() => { if (view === 'calendar' && !drag) renderTimeline(); }, 60000);
+
 render();
 checkReminders();
 sync();
