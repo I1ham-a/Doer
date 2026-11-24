@@ -20,12 +20,12 @@ let calDay = today();
 let query = '';
 
 function load() {
-  try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.tasks) { s.dead = s.dead || {}; return s; } } catch (e) {}
-  return { dead: {}, lists: [{ id: 'inbox', name: 'Входящие', color: COLORS[0] }, { id: uid(), name: 'Работа', color: COLORS[2] }, { id: uid(), name: 'Личное', color: COLORS[3] }], tasks: [] };
+  try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.tasks) { s.dead = s.dead || {}; s.habits = s.habits || []; s.focus = s.focus || []; return s; } } catch (e) {}
+  return { dead: {}, habits: [], focus: [], lists: [{ id: 'inbox', name: 'Входящие', color: COLORS[0] }, { id: uid(), name: 'Работа', color: COLORS[2] }, { id: uid(), name: 'Личное', color: COLORS[3] }], tasks: [] };
 }
 const snap = {};
 function stamp() {
-  for (const it of [...state.lists, ...state.tasks]) {
+  for (const it of [...state.lists, ...state.tasks, ...state.habits, ...state.focus]) {
     const j = JSON.stringify({ ...it, updated: 0 });
     if (snap[it.id] !== j) { if (snap[it.id] !== undefined || !it.updated) it.updated = Date.now(); snap[it.id] = j; }
   }
@@ -71,6 +71,9 @@ function renderSide() {
     ['week', '🗓', 'Ближайшие 7 дней', open.filter(x => x.date && x.date <= w).length],
     ['all', '📥', 'Все задачи', open.length],
     ['calendar', '📆', 'Календарь', ''],
+    ['matrix', '🔲', 'Матрица', ''],
+    ['focus', '🍅', 'Помодоро', pomo.running ? fmtSec(pomoLeft()) : ''],
+    ['habits', '🔥', 'Привычки', state.habits.filter(h => !(h.checks || {})[t]).length || ''],
     ['done', '✅', 'Выполнено', '']
   ];
   $('#syncBtn').textContent = syncLabel();
@@ -80,7 +83,7 @@ function renderSide() {
 
 function titleText() {
   if (query) return `Поиск: ${query}`;
-  const m = { today: 'Сегодня', tomorrow: 'Завтра', week: 'Ближайшие 7 дней', all: 'Все задачи', calendar: 'Календарь', done: 'Выполнено' };
+  const m = { matrix: 'Матрица', focus: 'Помодоро', habits: 'Привычки', today: 'Сегодня', tomorrow: 'Завтра', week: 'Ближайшие 7 дней', all: 'Все задачи', calendar: 'Календарь', done: 'Выполнено' };
   return m[view] || list(view.slice(5)).name;
 }
 
@@ -157,14 +160,17 @@ function renderDetail() {
 function render() {
   renderSide();
   $('#title').textContent = titleText();
+  const extra = EXTRA.includes(view) && !query;
+  $('#quick').hidden = extra;
   renderCal();
-  renderTasks();
+  if (extra) $('#tasks').innerHTML = ''; else renderTasks();
   renderTimeline();
+  renderExtra();
   renderDetail();
 }
 const touch = () => { save(); render(); };
 // Update list/sidebar without destroying the focused detail inputs
-const touchSoft = () => { save(); renderSide(); renderTasks(); renderCal(); renderTimeline(); };
+const touchSoft = () => { save(); renderSide(); if (!EXTRA.includes(view) || query) renderTasks(); else renderExtra(); renderCal(); renderTimeline(); };
 
 // ---------- quick add parsing ----------
 function parseQuick(text) {
@@ -290,6 +296,8 @@ document.addEventListener('keydown', e => {
     const x = task(selId), v = e.target.value.trim();
     if (x && v) { x.subs.push({ id: uid(), t: v, done: false }); touch(); $('#dSub').focus(); }
   }
+  if (e.key === 'Enter' && e.target.classList.contains('mx-add')) { addToQuad(e.target.value, +e.target.dataset.q); }
+  if (e.key === 'Enter' && e.target.id === 'hbNew') { const v = e.target.value.trim(); if (v) { state.habits.push({ id: uid(), name: v, checks: {}, created: Date.now() }); touch(); $('#hbNew').focus(); } }
   if (e.key === 'Escape') { if (selId) { selId = null; render(); } }
 });
 $('#quick').addEventListener('submit', e => {
@@ -317,7 +325,7 @@ function mergeInto(remote) {
   };
   const lists = merge(state.lists, remote.lists || []);
   if (!lists.some(l => l.id === 'inbox')) lists.unshift({ id: 'inbox', name: 'Входящие', color: COLORS[0], updated: 1 });
-  state = { dead, lists, tasks: merge(state.tasks, remote.tasks || []) };
+  state = { dead, lists, tasks: merge(state.tasks, remote.tasks || []), habits: merge(state.habits, remote.habits || []), focus: merge(state.focus, remote.focus || []) };
   if (view.startsWith('list:') && !state.lists.some(l => 'list:' + l.id === view)) view = 'today';
   if (selId && !task(selId)) selId = null;
 }
@@ -476,7 +484,136 @@ window.addEventListener('pointercancel', e => endDrag(e, !drag || !drag.active))
 document.addEventListener('touchmove', e => { if (drag && drag.active) e.preventDefault(); }, { passive: false });
 setInterval(() => { if (view === 'calendar' && !drag) renderTimeline(); }, 60000);
 
+
+// ---------- premium: matrix, pomodoro, habits ----------
+const EXTRA = ['matrix', 'focus', 'habits'];
+const QUADS = [[1, 'Срочно и важно', '#e5484d'], [2, 'Важно, не срочно', '#f5a524'], [3, 'Срочно, не важно', '#4772fa'], [0, 'Не срочно и не важно', '#30a46c']];
+function addToQuad(text, prio) {
+  const p = parseQuick(text); if (!p.title) return;
+  state.tasks.push({ id: uid(), title: p.title, notes: '', date: p.date, time: p.time, prio, listId: p.listId || 'inbox', done: false, doneAt: null, subs: [], created: Date.now(), repeat: '', remind: '' });
+  touch(); const i = document.querySelector(`.mx-add[data-q="${prio}"]`); if (i) i.focus();
+}
+function renderMatrix() {
+  const open = state.tasks.filter(x => !x.done).sort(cmp);
+  return `<div class="mx">${QUADS.map(([p, n, c]) => { const items = open.filter(x => (x.prio || 0) === p); return `<div class="mxq" data-q="${p}" style="--c:${c}"><h4>${n}<span>${items.length || ''}</span></h4><div class="mxl">${items.map(taskRow).join('').replace(/class="task /g, 'draggable="true" class="task ')}</div><input class="mx-add" data-q="${p}" placeholder="+ Добавить"></div>`; }).join('')}</div>
+    <p class="hint">Квадрат зависит от приоритета задачи: высокий → «Срочно и важно», средний → «Важно», низкий → «Срочно, не важно». На компьютере задачи можно перетаскивать между квадратами.</p>`;
+}
+document.addEventListener('dragstart', e => { const r = e.target.closest('.mxq .task'); if (r) e.dataTransfer.setData('text/plain', r.dataset.id); });
+document.addEventListener('dragover', e => { if (e.target.closest('.mxq')) e.preventDefault(); });
+document.addEventListener('drop', e => { const q = e.target.closest('.mxq'); if (!q) return; e.preventDefault(); const x = task(e.dataTransfer.getData('text/plain')); if (x) { x.prio = +q.dataset.q; touch(); } });
+
+// Pomodoro
+const PKEY = 'doer.pomo';
+const pomo = Object.assign({ phase: 'work', running: false, endsAt: 0, left: 25 * 60, count: 0, taskId: '', work: 25 }, (() => { try { return JSON.parse(localStorage.getItem(PKEY)) || {}; } catch (e) { return {}; } })());
+const pomoSave = () => { try { localStorage.setItem(PKEY, JSON.stringify(pomo)); } catch (e) {} };
+const phaseMin = ph => ph === 'work' ? pomo.work : ph === 'short' ? 5 : 15;
+const pomoLeft = () => pomo.running ? Math.max(0, Math.round((pomo.endsAt - Date.now()) / 1000)) : pomo.left;
+const fmtSec = s => `${pad(Math.floor(s / 60))}:${pad(s % 60)}`;
+const PHASE = { work: 'Фокус', short: 'Перерыв', long: 'Долгий перерыв' };
+function alarm(title, body) {
+  toast('🍅 ' + title);
+  if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+  if ('Notification' in window && Notification.permission === 'granted') {
+    navigator.serviceWorker?.getRegistration().then(r => r ? r.showNotification(title, { body, icon: 'icon.svg' }) : new Notification(title, { body })).catch(() => {});
+  }
+}
+function pomoFinish() {
+  if (pomo.phase === 'work') {
+    const mins = pomo.work;
+    state.focus.push({ id: uid(), start: pomo.endsAt - mins * 60000, mins, taskId: pomo.taskId, created: Date.now() });
+    pomo.count++; pomo.phase = pomo.count % 4 === 0 ? 'long' : 'short';
+    alarm('Помидор готов!', 'Время отдохнуть');
+  } else { pomo.phase = 'work'; alarm('Перерыв окончен', 'Пора за работу'); }
+  pomo.running = false; pomo.left = phaseMin(pomo.phase) * 60;
+  pomoSave(); save(); render();
+}
+function pomoTick() {
+  if (pomo.running && Date.now() >= pomo.endsAt) return pomoFinish();
+  const el = $('#pTime');
+  if (el) { const l = pomoLeft(), tot = phaseMin(pomo.phase) * 60; el.textContent = fmtSec(l); const ring = $('#pRing'); if (ring) ring.style.strokeDashoffset = (1 - l / tot) * 691; }
+  document.title = pomo.running ? `${fmtSec(pomoLeft())} · ${PHASE[pomo.phase]}` : 'Doer — планировщик дня';
+}
+setInterval(pomoTick, 1000);
+function renderFocus() {
+  const l = pomoLeft(), tot = phaseMin(pomo.phase) * 60, t = today();
+  const opts = state.tasks.filter(x => !x.done && (!x.date || x.date <= ymd(addDays(new Date(), 1)))).sort(cmp);
+  const dayMins = d => state.focus.filter(f => ymd(new Date(f.start)) === d).reduce((a, f) => a + f.mins, 0);
+  const days = [...Array(7)].map((_, i) => ymd(addDays(new Date(), i - 6)));
+  const mx = Math.max(25, ...days.map(dayMins));
+  const todayF = state.focus.filter(f => ymd(new Date(f.start)) === t).sort((a, b) => b.start - a.start);
+  return `<div class="pomo ${pomo.phase}">
+    <div class="p-phase">${['work', 'short', 'long'].map(p => `<button data-ph="${p}" class="${pomo.phase === p ? 'on' : ''}">${PHASE[p]}</button>`).join('')}</div>
+    <div class="p-clock"><svg viewBox="0 0 240 240"><circle cx="120" cy="120" r="110" class="p-bg"/><circle id="pRing" cx="120" cy="120" r="110" class="p-fg" style="stroke-dashoffset:${(1 - l / tot) * 691}"/></svg><div id="pTime">${fmtSec(l)}</div></div>
+    <div class="p-btns"><button class="btn primary" data-pomo="toggle">${pomo.running ? '⏸ Пауза' : '▶ Старт'}</button><button class="btn" data-pomo="reset">↺ Сброс</button><button class="btn" data-pomo="skip">⏭ Пропустить</button></div>
+    <div class="p-row"><label>Задача</label><select id="pTask"><option value="">— без задачи —</option>${opts.map(x => `<option value="${x.id}" ${x.id === pomo.taskId ? 'selected' : ''}>${esc(x.title)}</option>`).join('')}</select>
+    <label>Длина</label><select id="pLen">${[15, 25, 30, 45, 50, 60].map(m => `<option ${m === pomo.work ? 'selected' : ''}>${m}</option>`).join('')}</select> мин</div>
+  </div>
+  <div class="stats">
+    <div class="st"><b>${todayF.length}</b><span>помидоров сегодня</span></div>
+    <div class="st"><b>${dayMins(t)}</b><span>минут фокуса сегодня</span></div>
+    <div class="st"><b>${days.reduce((a, d) => a + dayMins(d), 0)}</b><span>минут за 7 дней</span></div>
+  </div>
+  <div class="bars">${days.map(d => `<div class="bar"><i style="height:${dayMins(d) / mx * 100}%"></i><small>${WD[parse(d).getDay()]}</small><em>${dayMins(d) || ''}</em></div>`).join('')}</div>
+  ${todayF.length ? `<div class="group"><h3>Сегодня</h3>${todayF.map(f => `<div class="task"><span>🍅</span><span class="t">${esc(task(f.taskId)?.title || 'Фокус')}</span><span class="meta">${new Date(f.start).toTimeString().slice(0, 5)} · ${f.mins} мин</span></div>`).join('')}</div>` : ''}`;
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-pomo]'), ph = e.target.closest('[data-ph]');
+  if (ph && !pomo.running) { pomo.phase = ph.dataset.ph; pomo.left = phaseMin(pomo.phase) * 60; pomoSave(); render(); }
+  if (!b) return;
+  const a = b.dataset.pomo;
+  if (a === 'toggle') {
+    if (pomo.running) { pomo.left = pomoLeft(); pomo.running = false; }
+    else { askNotify(); pomo.endsAt = Date.now() + pomo.left * 1000; pomo.running = true; }
+  }
+  if (a === 'reset') { pomo.running = false; pomo.left = phaseMin(pomo.phase) * 60; }
+  if (a === 'skip') { pomo.running = false; pomo.phase = pomo.phase === 'work' ? 'short' : 'work'; pomo.left = phaseMin(pomo.phase) * 60; }
+  pomoSave(); render(); pomoTick();
+});
+document.addEventListener('change', e => {
+  if (e.target.id === 'pTask') { pomo.taskId = e.target.value; pomoSave(); }
+  if (e.target.id === 'pLen') { pomo.work = +e.target.value; if (!pomo.running && pomo.phase === 'work') pomo.left = pomo.work * 60; pomoSave(); render(); }
+});
+
+// Habits
+function streak(h) {
+  const c = h.checks || {}; let d = new Date(), n = 0;
+  if (!c[ymd(d)]) d = addDays(d, -1);
+  while (c[ymd(d)]) { n++; d = addDays(d, -1); }
+  return n;
+}
+function renderHabits() {
+  const days = [...Array(7)].map((_, i) => ymd(addDays(new Date(), i - 6))), t = today();
+  const done = state.habits.filter(h => (h.checks || {})[t]).length;
+  return `<input id="hbNew" class="hb-new" placeholder="+ Новая привычка">
+    ${state.habits.length ? `<p class="hint">Сегодня: ${done} из ${state.habits.length} ✓</p>` : ''}
+    ${state.habits.map(h => `<div class="hb">
+      <div class="hb-top"><button class="hb-name" data-hbedit="${h.id}">${esc(h.name)}</button><span class="hb-streak" title="Дней подряд">🔥 ${streak(h)}</span><span class="hb-total">всего ${Object.keys(h.checks || {}).length}</span></div>
+      <div class="hb-week">${days.map(d => `<button class="hb-d ${(h.checks || {})[d] ? 'on' : ''} ${d === t ? 'now' : ''}" data-hb="${h.id}" data-d="${d}"><small>${WD[parse(d).getDay()]}</small><b>${(h.checks || {})[d] ? '✓' : parse(d).getDate()}</b></button>`).join('')}</div>
+    </div>`).join('') || '<div class="empty">Добавьте первую привычку выше 👆<br>Отмечайте её каждый день и копите серию 🔥</div>'}
+    ${state.habits.length ? '<p class="hint">Нажмите на название, чтобы переименовать или удалить.</p>' : ''}`;
+}
+document.addEventListener('click', e => {
+  const d = e.target.closest('[data-hb]');
+  if (d) { const h = state.habits.find(h => h.id === d.dataset.hb); h.checks = { ...(h.checks || {}) }; if (h.checks[d.dataset.d]) delete h.checks[d.dataset.d]; else { h.checks[d.dataset.d] = 1; if (navigator.vibrate) navigator.vibrate(10); } touch(); }
+  const ed = e.target.closest('[data-hbedit]');
+  if (ed) {
+    const h = state.habits.find(h => h.id === ed.dataset.hbedit);
+    const n = prompt('Название привычки (пусто — удалить)', h.name); if (n === null) return;
+    if (!n.trim()) { if (confirm(`Удалить привычку «${h.name}»?`)) { state.dead[h.id] = Date.now(); state.habits = state.habits.filter(x => x !== h); touch(); } }
+    else { h.name = n.trim(); touch(); }
+  }
+});
+
+function renderExtra() {
+  const box = $('#extra');
+  const on = EXTRA.includes(view) && !query;
+  box.hidden = !on; if (!on) return;
+  if (view === 'focus' && document.activeElement && ['pTask', 'pLen'].includes(document.activeElement.id)) return;
+  box.innerHTML = view === 'matrix' ? renderMatrix() : view === 'focus' ? renderFocus() : renderHabits();
+}
+
 render();
+pomoTick();
 checkReminders();
 sync();
 setInterval(renderSide, 60000);

@@ -25,11 +25,12 @@ http.createServer((req, res) => {
     req.on('end', () => {
       try {
         const inc = JSON.parse(body), f = file(key);
-        const cur = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : { lists: [], tasks: [], dead: {} };
+        const cur = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : {};
         const dead = { ...(cur.dead || {}) };
         for (const k in inc.dead || {}) dead[k] = Math.max(dead[k] || 0, inc.dead[k]);
         const cutoff = Date.now() - 60 * 864e5; for (const k in dead) if (dead[k] < cutoff) delete dead[k];
-        const out = { lists: merge(cur.lists, inc.lists, dead), tasks: merge(cur.tasks, inc.tasks, dead), dead };
+        const out = { dead };
+        for (const k of ['lists', 'tasks', 'habits', 'focus']) out[k] = merge(cur[k], inc[k], dead);
         fs.writeFileSync(f + '.tmp', JSON.stringify(out)); fs.renameSync(f + '.tmp', f);
         res.writeHead(200, { ...cors, 'Content-Type': 'application/json' }); res.end(JSON.stringify(out));
       } catch (e) { res.writeHead(400, cors); res.end('bad request'); }
