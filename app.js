@@ -79,6 +79,8 @@ function renderSide() {
     ['settings', '⚙️', 'Настройки', '']
   ];
   $('#syncBtn').textContent = syncLabel();
+  document.querySelectorAll('#tabbar [data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+  $('#fab').hidden = EXTRA.includes(view);
   $('#smart').innerHTML = smart.map(([id, ic, n, c]) => `<button class="nav ${view === id ? 'active' : ''}" data-view="${id}"><span>${ic}</span>${n}<span class="cnt">${c}</span></button>`).join('');
   $('#lists').innerHTML = state.lists.map(l => `<button class="nav ${view === 'list:' + l.id ? 'active' : ''}" data-view="list:${l.id}" data-lid="${l.id}"><span class="dot" style="background:${l.color}"></span>${esc(l.name)}<span class="cnt">${open.filter(x => x.listId === l.id).length || ''}</span></button>`).join('');
 }
@@ -111,15 +113,24 @@ function renderTasks() {
       groups.get(k).push(x);
     }
     const order = [...groups.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
-    const single = view === 'tomorrow' || (view === 'today' && order.every(k => k === 'Просрочено' || k === today()));
+    const single = view === 'tomorrow' || (view === 'today' && order.every(k => k === today()));
     for (const k of order) {
       const head = /^\d/.test(k) ? dateLabel(k) : k;
-      html += `<div class="group">${single && /^\d/.test(k) ? '' : `<h3 class="${k === 'Просрочено' ? 'over' : ''}">${head}</h3>`}${groups.get(k).map(taskRow).join('')}</div>`;
+      const extraBtn = k === 'Просрочено' && !query ? `<button class="link" id="moveOver">Перенести на сегодня</button>` : '';
+      html += `<div class="group">${single && /^\d/.test(k) ? '' : `<h3 class="${k === 'Просрочено' ? 'over' : ''}">${head}${extraBtn}</h3>`}${groups.get(k).map(taskRow).join('')}</div>`;
+    }
+    if (view === 'today' && !query) {
+      const t = today(), doneToday = state.tasks.filter(x => x.done && (x.date === t || (x.doneAt && ymd(new Date(x.doneAt)) === t)));
+      const total = items.length + doneToday.length;
+      if (total) html = `<div class="prog"><div><b>${doneToday.length} из ${total}</b> выполнено сегодня${doneToday.length === total ? ' 🎉' : ''}</div><span><i style="width:${doneToday.length / total * 100}%"></i></span></div>` + html;
+      if (doneToday.length) html += `<div class="group"><h3 class="fold" id="foldDone">${showDone ? '▾' : '▸'} Выполнено (${doneToday.length})</h3>${showDone ? doneToday.map(taskRow).join('') : ''}</div>`;
+      if (!items.length && doneToday.length) { $('#tasks').innerHTML = html.replace('<div class="group">', '<div class="empty" style="padding:30px 0">Всё сделано! 🎉</div><div class="group">'); return; }
     }
   } else html = `<div class="group">${view === 'calendar' ? '<h3>Без времени</h3>' : ''}${items.map(taskRow).join('')}</div>`;
   if (view === 'calendar' && !items.length && !query) { $('#tasks').innerHTML = ''; return; }
   $('#tasks').innerHTML = items.length ? html : `<div class="empty">Здесь пока пусто 🎉<br>Добавьте задачу выше</div>`;
 }
+let showDone = false;
 function rank(k) { return k === 'Просрочено' ? 0 : /^\d/.test(k) ? 1 : k === 'Без даты' ? 2 : 3; }
 
 function renderCal() {
@@ -153,6 +164,7 @@ function renderDetail() {
     <input id="dTitle" value="${esc(x.title)}" style="width:100%">
     <div class="row two"><div class="row" style="margin:0"><label>Дата</label><input type="date" id="dDate" value="${x.date || ''}"></div>
       <div class="row" style="margin:0"><label>Время</label><input type="time" id="dTime" value="${x.time || ''}"></div></div>
+    <div class="qd">${[['0', 'Сегодня'], ['1', 'Завтра'], ['7', '+ неделя'], ['none', 'Без даты']].map(([v, n]) => `<button data-qd="${v}">${n}</button>`).join('')}</div>
     <div class="row"><label>Приоритет</label><div class="prio">${[[0, 'Нет'], [3, 'Низкий'], [2, 'Средний'], [1, 'Высокий']].map(([p, n]) => `<button data-p="${p}" class="${x.prio === p ? 'on' : ''}">${n}</button>`).join('')}</div></div>
     ${x.time ? `<div class="row"><label>Длительность</label><select id="dDur">${[15, 30, 45, 60, 90, 120, 180, 240, 480].map(m => `<option value="${m}" ${(x.dur || 60) === m ? 'selected' : ''}>${m < 60 ? m + ' мин' : (m / 60) + ' ч'}</option>`).join('')}</select></div>` : ''}
     <div class="two"><div class="row"><label>Повтор</label><select id="dRepeat">${[['', 'Нет'], ['daily', 'Каждый день'], ['weekdays', 'По будням'], ['weekly', 'Каждую неделю'], ['monthly', 'Каждый месяц'], ['yearly', 'Каждый год']].map(([v, n]) => `<option value="${v}" ${(x.repeat || '') === v ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
@@ -226,6 +238,10 @@ document.addEventListener('click', e => {
   const t = e.target;
   const nav = t.closest('[data-view]');
   if (nav) { view = nav.dataset.view; query = ''; $('#search').value = ''; selId = null; document.body.classList.remove('menu'); return render(); }
+  if (t.id === 'moveOver') { const td = today(), moved = state.tasks.filter(x => !x.done && x.date && x.date < td); const prev = moved.map(x => [x, x.date]); moved.forEach(x => x.date = td); touch(); undoToast(`Перенесено на сегодня: ${moved.length}`, () => { prev.forEach(([x, d]) => x.date = d); touch(); }); return; }
+  if (t.id === 'foldDone') { showDone = !showDone; return renderTasks(); }
+  if (t.closest('#fab')) { const i = $('#quickInput'); $('#content').scrollTo({ top: 0, behavior: 'smooth' }); i.focus(); return; }
+  if (swiped) { swiped = false; return; }
   const chk = t.closest('[data-chk]');
   if (chk) { toggle(chk.dataset.chk); return; }
   const row = t.closest('.task');
@@ -243,7 +259,8 @@ document.addEventListener('click', e => {
   if (!x) return;
   if (t.id === 'dClose') { selId = null; render(); }
   if (t.id === 'dDone') toggle(x.id);
-  if (t.id === 'dDel') { if (confirm('Удалить задачу?')) { state.dead[x.id] = Date.now(); state.tasks = state.tasks.filter(y => y.id !== x.id); selId = null; touch(); } }
+  if (t.id === 'dDel') removeTask(x.id);
+  if (t.dataset.qd !== undefined) { x.date = t.dataset.qd === 'none' ? null : ymd(addDays(new Date(), +t.dataset.qd)); touch(); }
   if (t.dataset.p !== undefined) { x.prio = +t.dataset.p; touch(); }
   if (t.dataset.sx) { x.subs = x.subs.filter(s => s.id !== t.dataset.sx); touch(); }
 });
@@ -265,6 +282,7 @@ let lp; document.addEventListener('touchstart', e => { const b = e.target.closes
 
 function toggle(id) {
   const x = task(id); if (!x) return;
+  let created = null;
   x.done = !x.done; x.doneAt = x.done ? Date.now() : null;
   if (x.done && x.repeat) {
     const base = x.date ? parse(x.date) : new Date();
@@ -274,10 +292,34 @@ function toggle(id) {
     else if (x.repeat === 'weekly') n.setDate(n.getDate() + 7);
     else if (x.repeat === 'monthly') n.setMonth(n.getMonth() + 1);
     else if (x.repeat === 'yearly') n.setFullYear(n.getFullYear() + 1);
-    state.tasks.push({ ...x, id: uid(), date: ymd(n), done: false, doneAt: null, repeat: x.repeat, created: Date.now(), subs: x.subs.map(s => ({ ...s, id: uid(), done: false })) });
+    const nx = { ...x, id: uid(), date: ymd(n), done: false, doneAt: null, repeat: x.repeat, created: Date.now(), subs: x.subs.map(s => ({ ...s, id: uid(), done: false })) };
+    state.tasks.push(nx); created = nx.id;
   }
-  if (!x.done) { /* un-completing leaves any generated occurrence in place */ }
   touch();
+  if (x.done) {
+    if (navigator.vibrate) navigator.vibrate(10);
+    undoToast(`✓ «${x.title}» выполнено`, () => {
+      x.done = false; x.doneAt = null;
+      if (created) { state.dead[created] = Date.now(); state.tasks = state.tasks.filter(t => t.id !== created); }
+      touch();
+    });
+  }
+}
+function removeTask(id) {
+  const x = task(id); if (!x) return;
+  state.dead[x.id] = Date.now(); state.tasks = state.tasks.filter(y => y.id !== x.id);
+  if (selId === x.id) selId = null;
+  touch();
+  undoToast(`🗑 «${x.title}» удалено`, () => { x.updated = Date.now() + 1; state.tasks.push(x); touch(); });
+}
+let undoT = null;
+function undoToast(msg, fn) {
+  let el = $('#undo');
+  if (!el) { el = document.createElement('div'); el.id = 'undo'; document.body.appendChild(el); }
+  el.innerHTML = `<span>${esc(msg)}</span><button>Отменить</button>`;
+  el.className = 'show';
+  el.querySelector('button').onclick = () => { el.className = ''; clearTimeout(undoT); fn(); };
+  clearTimeout(undoT); undoT = setTimeout(() => el.className = '', 5000);
 }
 
 document.addEventListener('input', e => {
@@ -720,6 +762,32 @@ function renderExtra() {
   if (view === 'focus' && document.activeElement && ['pTask', 'pLen'].includes(document.activeElement.id)) return;
   box.innerHTML = view === 'matrix' ? renderMatrix() : view === 'focus' ? renderFocus() : view === 'stats' ? renderStats() : view === 'settings' ? renderSettings() : renderHabits();
 }
+
+// ---------- swipe on task rows (phone) ----------
+let sw = null, swiped = false;
+document.addEventListener('touchstart', e => {
+  const row = e.target.closest('.task[data-id]');
+  if (!row || e.target.closest('[data-chk]') || e.touches.length > 1) return;
+  sw = { row, x0: e.touches[0].clientX, y0: e.touches[0].clientY, dx: 0, on: false };
+}, { passive: true });
+document.addEventListener('touchmove', e => {
+  if (!sw) return;
+  const dx = e.touches[0].clientX - sw.x0, dy = e.touches[0].clientY - sw.y0;
+  if (!sw.on) { if (Math.abs(dy) > 10) { sw = null; return; } if (Math.abs(dx) > 12) sw.on = true; else return; }
+  sw.dx = dx;
+  sw.row.style.transform = `translateX(${dx}px)`;
+  sw.row.classList.toggle('sw-done', dx > 70); sw.row.classList.toggle('sw-del', dx < -70);
+}, { passive: true });
+document.addEventListener('touchend', () => {
+  if (!sw) return;
+  const { row, dx, on } = sw; sw = null;
+  if (!on) return;
+  swiped = true; setTimeout(() => swiped = false, 400);
+  row.style.transition = 'transform .15s'; row.style.transform = '';
+  if (dx > 70) toggle(row.dataset.id);
+  else if (dx < -70) removeTask(row.dataset.id);
+  else setTimeout(() => { row.style.transition = ''; row.classList.remove('sw-done', 'sw-del'); }, 160);
+});
 
 render();
 pomoTick();
