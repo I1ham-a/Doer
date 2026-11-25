@@ -614,7 +614,7 @@ function pomoTick() {
   if (pomo.running && Date.now() >= pomo.endsAt) return pomoFinish();
   const el = $('#pTime');
   if (el) { const l = pomoLeft(), tot = phaseMin(pomo.phase) * 60; el.textContent = fmtSec(l); const ring = $('#pRing'); if (ring) ring.style.strokeDashoffset = (1 - l / tot) * 691; }
-  document.title = pomo.running ? `${fmtSec(pomoLeft())} · ${PHASE[pomo.phase]}` : 'Doer — планировщик дня';
+  document.title = pomo.running ? `${fmtSec(pomoLeft())} · ${PHASE[pomo.phase]}` : 'Күнім — планировщик дня';
 }
 setInterval(pomoTick, 1000);
 function renderFocus() {
@@ -739,7 +739,7 @@ document.addEventListener('click', e => {
   }
   if (e.target.id === 'bkSave') {
     const blob = new Blob([JSON.stringify(state, null, 1)], { type: 'application/json' });
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `doer-${today()}.json`;
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `kunim-${today()}.json`;
     document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   }
   if (e.target.id === 'bkLoad') $('#bkFile').click();
