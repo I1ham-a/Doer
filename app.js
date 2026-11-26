@@ -590,7 +590,7 @@ document.addEventListener('click', async e => {
   }
 });
 window.addEventListener('online', sync);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); else if (pushT) { clearTimeout(pushT); pushT = null; sync(); } });
 setInterval(() => { if (!document.hidden) sync(); }, 30000);
 
 // ---------- reminders ----------
