@@ -436,6 +436,7 @@ async function sync() {
 }
 let lastSync = 0;
 $('#syncBtn').addEventListener('click', () => { view = 'settings'; selId = null; document.body.classList.remove('menu'); render(); });
+const SB_DEFAULT = { url: 'https://aeqozxyznklnyaouojak.supabase.co', anon: 'sb_publishable_MhEDPCJvj6ngU7u1wKlW_A_AAc9OtFf' };
 const SQL_TEXT = `-- Күнім: синхронизация. Вставьте целиком в Supabase → SQL Editor → Run.
 create table if not exists kunim_sync (
   id text primary key,
@@ -479,9 +480,9 @@ function renderSyncSettings() {
         <button class="btn" id="sCopy">📋 Код для другого устройства</button>
         <button class="btn danger" id="sOff">Отключить</button></div>
       <p class="hint">Чтобы подключить телефон или ноутбук: нажмите «Код для другого устройства», отправьте его себе (например в Telegram «Избранное») и на другом устройстве нажмите «Вставить код подключения».</p>`
-    : `<div class="p-btns" style="justify-content:flex-start"><button class="btn primary" id="sPaste">📥 Вставить код подключения</button></div>
-      <p class="hint">Уже настроили на другом устройстве? Вставьте код оттуда. Настраиваете впервые? Заполните поля ниже.</p>
-      <details class="sb"><summary>Первая настройка (Supabase)</summary>
+    : `<div class="p-btns" style="justify-content:flex-start"><button class="btn primary" id="sStart">☁ Включить синхронизацию</button><button class="btn" id="sPaste">📥 Вставить код подключения</button></div>
+      <p class="hint"><b>Первое устройство:</b> нажмите «Включить синхронизацию».<br><b>Второе устройство:</b> нажмите «Вставить код подключения» и вставьте код с первого.</p>
+      <details class="sb"><summary>Свой сервер Supabase (для опытных)</summary>
         <div class="row"><label>Project URL</label><input id="sUrl" placeholder="https://xxxx.supabase.co" value="${esc(c.url || '')}"></div>
         <div class="row"><label>Publishable / anon key</label><input id="sAnon" placeholder="sb_publishable_… или eyJ…" value="${esc(c.anon || '')}"></div>
         <div class="row"><label>Секретный код (придуман автоматически)</label><input id="sKey" value="${esc(c.key || randCode())}"></div>
@@ -504,6 +505,12 @@ document.addEventListener('click', async e => {
     if (c.key.length < 16) return alert('Секретный код должен быть не короче 16 символов');
     localStorage.setItem(CFG, JSON.stringify(c)); await sync(); render();
     toast(syncState === 'ok' ? '✓ Синхронизация подключена' : '⚠ Не получилось — проверьте данные');
+  }
+  if (id === 'sStart') {
+    localStorage.setItem(CFG, JSON.stringify({ type: 'supabase', url: SB_DEFAULT.url, anon: SB_DEFAULT.anon, key: randCode() + randCode().slice(0, 6) }));
+    await sync(); render();
+    if (syncState === 'ok') { toast('✓ Синхронизация включена'); copyText(encodeConn(cfg()), '✓ Код для другого устройства скопирован'); }
+    else toast('⚠ Не получилось подключиться — проверьте интернет');
   }
   if (id === 'sPaste') {
     const v = prompt('Вставьте код подключения (начинается с KUNIM1:)'); if (!v) return;
