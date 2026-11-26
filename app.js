@@ -48,7 +48,7 @@ function dateLabel(ds) {
 function visible() {
   const t = today(), tm = ymd(addDays(new Date(), 1)), w = ymd(addDays(new Date(), 6));
   let r = state.tasks;
-  if (query) { const q = query.toLowerCase(); return r.filter(x => (x.title + ' ' + x.notes).toLowerCase().includes(q)); }
+  if (query) { const q = query.toLowerCase(); return r.filter(x => (x.title + ' ' + x.notes + ' ' + (x.tags || []).map(t => '#' + t).join(' ')).toLowerCase().includes(q)); }
   if (view === 'done') return r.filter(x => x.done).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
   r = r.filter(x => !x.done);
   if (view === 'today') return r.filter(x => x.date && x.date <= t);
@@ -56,6 +56,7 @@ function visible() {
   if (view === 'week') return r.filter(x => x.date && x.date <= w);
   if (view === 'calendar') return calMode === 'week' ? [] : r.filter(x => x.date === calDay && !x.time);
   if (view.startsWith('list:')) return r.filter(x => x.listId === view.slice(5));
+  if (view.startsWith('tag:')) return r.filter(x => (x.tags || []).includes(view.slice(4)));
   return r;
 }
 const prioKey = p => p ? p : 9;
@@ -82,12 +83,17 @@ function renderSide() {
   document.querySelectorAll('#tabbar [data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   $('#fab').hidden = EXTRA.includes(view);
   $('#smart').innerHTML = smart.map(([id, ic, n, c]) => `<button class="nav ${view === id ? 'active' : ''}" data-view="${id}"><span>${ic}</span>${n}<span class="cnt">${c}</span></button>`).join('');
+  const tagCount = {};
+  for (const x of open) for (const tg of x.tags || []) tagCount[tg] = (tagCount[tg] || 0) + 1;
+  const tagNames = Object.keys(tagCount).sort();
+  $('#tags').innerHTML = tagNames.length ? `<div class="side-head"><span>Теги</span></div>` + tagNames.map(tg => `<button class="nav ${view === 'tag:' + tg ? 'active' : ''}" data-view="tag:${esc(tg)}"><span class="hash">#</span>${esc(tg)}<span class="cnt">${tagCount[tg]}</span></button>`).join('') : '';
   $('#lists').innerHTML = state.lists.map(l => `<button class="nav ${view === 'list:' + l.id ? 'active' : ''}" data-view="list:${l.id}" data-lid="${l.id}"><span class="dot" style="background:${l.color}"></span>${esc(l.name)}<span class="cnt">${open.filter(x => x.listId === l.id).length || ''}</span></button>`).join('');
 }
 
 function titleText() {
   if (query) return `Поиск: ${query}`;
   const m = { stats: 'Статистика', settings: 'Настройки', matrix: 'Матрица', focus: 'Помодоро', habits: 'Привычки', today: 'Сегодня', tomorrow: 'Завтра', week: 'Ближайшие 7 дней', all: 'Все задачи', calendar: 'Календарь', done: 'Выполнено' };
+  if (view.startsWith('tag:')) return '#' + view.slice(4);
   return m[view] || list(view.slice(5)).name;
 }
 
@@ -98,7 +104,7 @@ function taskRow(x) {
   return `<div class="task ${x.done ? 'done' : ''} ${x.id === selId ? 'sel' : ''}" data-id="${x.id}">
     <button class="chk p${x.prio}" data-chk="${x.id}">${x.done ? '✓' : ''}</button>
     <span class="t">${esc(x.title)}</span>
-    <span class="meta">${subs}${dt}<span class="dot" style="background:${l.color}" title="${esc(l.name)}"></span></span></div>`;
+    <span class="meta">${(x.tags || []).slice(0, 2).map(tg => `<span class="tag">#${esc(tg)}</span>`).join('')}${subs}${dt}<span class="dot" style="background:${l.color}" title="${esc(l.name)}"></span></span></div>`;
 }
 
 function renderTasks() {
@@ -122,15 +128,18 @@ function renderTasks() {
     if (view === 'today' && !query) {
       const t = today(), doneToday = state.tasks.filter(x => x.done && (x.date === t || (x.doneAt && ymd(new Date(x.doneAt)) === t)));
       const total = items.length + doneToday.length;
+      const cand = state.tasks.filter(x => !x.done && (!x.date || (x.date > t && x.date <= ymd(addDays(new Date(), 7))))).sort(cmp);
+      const planBox = planOpen ? `<div class="plan"><h3>Что сделать сегодня? <button class="link" id="planDay">Готово</button></h3>${cand.length ? cand.map(x => `<div class="plan-row"><span class="t">${esc(x.title)}</span><span class="meta">${x.date ? dateLabel(x.date) : 'без даты'}</span><button class="btn sm" data-totoday="${x.id}">+ Сегодня</button></div>`).join('') : '<p class="hint">Нет задач на потом — всё уже распланировано 👍</p>'}</div>` : '';
+      html = (cand.length || planOpen ? `<div class="plan-bar">${planOpen ? '' : `<button class="link" id="planDay">🗓 Спланировать день (${cand.length})</button>`}</div>` : '') + planBox + html;
       if (total) html = `<div class="prog"><div><b>${doneToday.length} из ${total}</b> выполнено сегодня${doneToday.length === total ? ' 🎉' : ''}</div><span><i style="width:${doneToday.length / total * 100}%"></i></span></div>` + html;
       if (doneToday.length) html += `<div class="group"><h3 class="fold" id="foldDone">${showDone ? '▾' : '▸'} Выполнено (${doneToday.length})</h3>${showDone ? doneToday.map(taskRow).join('') : ''}</div>`;
       if (!items.length && doneToday.length) { $('#tasks').innerHTML = html.replace('<div class="group">', '<div class="empty" style="padding:30px 0">Всё сделано! 🎉</div><div class="group">'); return; }
     }
   } else html = `<div class="group">${view === 'calendar' ? '<h3>Без времени</h3>' : ''}${items.map(taskRow).join('')}</div>`;
   if (view === 'calendar' && !items.length && !query) { $('#tasks').innerHTML = ''; return; }
-  $('#tasks').innerHTML = items.length ? html : `<div class="empty">Здесь пока пусто 🎉<br>Добавьте задачу выше</div>`;
+  $('#tasks').innerHTML = items.length ? html : (view === 'today' && !query ? html : '') + `<div class="empty">Здесь пока пусто 🎉<br>Добавьте задачу выше</div>`;
 }
-let showDone = false;
+let showDone = false, planOpen = false;
 function rank(k) { return k === 'Просрочено' ? 0 : /^\d/.test(k) ? 1 : k === 'Без даты' ? 2 : 3; }
 
 function renderCal() {
@@ -160,7 +169,7 @@ function renderDetail() {
   if (!x) { box.hidden = true; return; }
   box.hidden = false;
   box.innerHTML = `
-    <div class="actions" style="margin:0 0 8px"><button class="btn" id="dClose">← Закрыть</button><button class="btn" id="dDone">${x.done ? 'Вернуть' : '✓ Выполнить'}</button></div>
+    <div class="actions" style="margin:0 0 8px"><button class="btn" id="dClose">← Закрыть</button><button class="btn" id="dFocus" title="Фокус на задаче">🍅</button><button class="btn" id="dDone">${x.done ? 'Вернуть' : '✓ Выполнить'}</button></div>
     <input id="dTitle" value="${esc(x.title)}" style="width:100%">
     <div class="row two"><div class="row" style="margin:0"><label>Дата</label><input type="date" id="dDate" value="${x.date || ''}"></div>
       <div class="row" style="margin:0"><label>Время</label><input type="time" id="dTime" value="${x.time || ''}"></div></div>
@@ -170,6 +179,7 @@ function renderDetail() {
     <div class="two"><div class="row"><label>Повтор</label><select id="dRepeat">${[['', 'Нет'], ['daily', 'Каждый день'], ['weekdays', 'По будням'], ['weekly', 'Каждую неделю'], ['monthly', 'Каждый месяц'], ['yearly', 'Каждый год']].map(([v, n]) => `<option value="${v}" ${(x.repeat || '') === v ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
     <div class="row"><label>Напоминание</label><select id="dRemind">${[['', 'Нет'], ['0', 'В момент'], ['10', 'За 10 мин'], ['60', 'За 1 час'], ['1440', 'За 1 день']].map(([v, n]) => `<option value="${v}" ${(x.remind ?? '') === v ? 'selected' : ''}>${n}</option>`).join('')}</select></div></div>
     <div class="row"><label>Список</label><select id="dList">${state.lists.map(l => `<option value="${l.id}" ${l.id === x.listId ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select></div>
+    <div class="row"><label>Теги</label><input id="dTags" placeholder="напр. спорт, учёба" value="${esc((x.tags || []).join(', '))}"></div>
     <div class="row"><label>Подзадачи</label>
       ${x.subs.map(s => `<div class="sub ${s.done ? 'done' : ''}"><input type="checkbox" data-sc="${s.id}" ${s.done ? 'checked' : ''}><input type="text" data-st="${s.id}" value="${esc(s.t)}"><button class="x" data-sx="${s.id}">✕</button></div>`).join('')}
       <input id="dSub" placeholder="+ Добавить подзадачу"></div>
@@ -194,10 +204,11 @@ const touchSoft = () => { save(); renderSide(); if (!EXTRA.includes(view) || que
 
 // ---------- quick add parsing ----------
 function parseQuick(text) {
-  let title = text, date = null, time = null, prio = 0, listId = null;
+  let title = text, date = null, time = null, prio = 0, listId = null; const tags = [];
   title = title.replace(/(^|\s)#([^\s#!]+)/g, (m, sp, name) => {
     const l = state.lists.find(l => l.name.toLowerCase() === name.toLowerCase());
-    if (l) { listId = l.id; return sp; } return m;
+    if (l) { listId = l.id; return sp; }
+    const tg = name.toLowerCase(); if (!tags.includes(tg)) tags.push(tg); return sp;
   });
   title = title.replace(/(^|\s)!([1-3])(?=\s|$)/, (m, sp, p) => { prio = +p; return sp; });
   title = title.replace(/(^|\s)(?:в\s+)?(\d{1,2})[:.](\d{2})(?=\s|$)/i, (m, sp, h, mi) => { if (+h < 24 && +mi < 60) { time = `${pad(h)}:${mi}`; return sp; } return m; });
@@ -219,7 +230,7 @@ function parseQuick(text) {
     }
   }
   title = title.replace(/\s+/g, ' ').trim();
-  return { title, date, time, prio, listId };
+  return { title, date, time, prio, listId, tags };
 }
 
 function addTask(text) {
@@ -228,7 +239,8 @@ function addTask(text) {
   let listId = p.listId || (view.startsWith('list:') ? view.slice(5) : 'inbox');
   let date = p.date;
   if (!date) { if (view === 'today') date = today(); else if (view === 'tomorrow') date = ymd(addDays(new Date(), 1)); else if (view === 'calendar') date = calDay; }
-  const x = { id: uid(), title: p.title, notes: '', date, time: p.time, prio: p.prio, listId, done: false, doneAt: null, subs: [], created: Date.now() };
+  const tags = [...p.tags]; if (view.startsWith('tag:') && !tags.includes(view.slice(4))) tags.push(view.slice(4));
+  const x = { id: uid(), title: p.title, notes: '', date, time: p.time, prio: p.prio, listId, tags, done: false, doneAt: null, subs: [], created: Date.now() };
   state.tasks.push(x);
   touch();
 }
@@ -240,6 +252,8 @@ document.addEventListener('click', e => {
   if (nav) { view = nav.dataset.view; query = ''; $('#search').value = ''; selId = null; document.body.classList.remove('menu'); return render(); }
   if (t.id === 'moveOver') { const td = today(), moved = state.tasks.filter(x => !x.done && x.date && x.date < td); const prev = moved.map(x => [x, x.date]); moved.forEach(x => x.date = td); touch(); undoToast(`Перенесено на сегодня: ${moved.length}`, () => { prev.forEach(([x, d]) => x.date = d); touch(); }); return; }
   if (t.id === 'foldDone') { showDone = !showDone; return renderTasks(); }
+  if (t.id === 'planDay') { planOpen = !planOpen; return renderTasks(); }
+  const tt = t.closest('[data-totoday]'); if (tt) { const x = task(tt.dataset.totoday); if (x) { x.date = today(); touch(); } return; }
   if (t.closest('#fab')) { const i = $('#quickInput'); $('#content').scrollTo({ top: 0, behavior: 'smooth' }); i.focus(); return; }
   if (swiped) { swiped = false; return; }
   const chk = t.closest('[data-chk]');
@@ -260,6 +274,7 @@ document.addEventListener('click', e => {
   if (t.id === 'dClose') { selId = null; render(); }
   if (t.id === 'dDone') toggle(x.id);
   if (t.id === 'dDel') removeTask(x.id);
+  if (t.id === 'dFocus') { pomo.taskId = x.id; pomo.phase = 'work'; pomo.left = pomo.work * 60; pomo.endsAt = Date.now() + pomo.left * 1000; pomo.running = true; askNotify(); pomoSave(); selId = null; view = 'focus'; render(); pomoTick(); return; }
   if (t.dataset.qd !== undefined) { x.date = t.dataset.qd === 'none' ? null : ymd(addDays(new Date(), +t.dataset.qd)); touch(); }
   if (t.dataset.p !== undefined) { x.prio = +t.dataset.p; touch(); }
   if (t.dataset.sx) { x.subs = x.subs.filter(s => s.id !== t.dataset.sx); touch(); }
@@ -339,6 +354,7 @@ document.addEventListener('change', e => {
   if (t.id === 'dRepeat') { x.repeat = t.value; touch(); }
   if (t.id === 'dRemind') { x.remind = t.value; touch(); if (t.value !== '') askNotify(); }
   if (t.id === 'dList') { x.listId = t.value; touch(); }
+  if (t.id === 'dTags') { x.tags = [...new Set(t.value.split(/[,\s]+/).map(v => v.replace(/^#/, '').trim().toLowerCase()).filter(Boolean))]; touch(); }
   if (t.dataset.sc) { const s = x.subs.find(s => s.id === t.dataset.sc); s.done = t.checked; touch(); }
 });
 document.addEventListener('keydown', e => {
@@ -788,6 +804,20 @@ document.addEventListener('touchend', () => {
   else if (dx < -70) removeTask(row.dataset.id);
   else setTimeout(() => { row.style.transition = ''; row.classList.remove('sw-done', 'sw-del'); }, 160);
 });
+
+// ---------- first launch: sample tasks ----------
+try {
+  if (!state.tasks.length && !localStorage.getItem('kunim.welcome')) {
+    const t = today();
+    ['👋 Привет! Это Күнім — твой планировщик дня',
+     '👉 Смахни задачу вправо — выполнено, влево — удалить',
+     '✏️ Нажми на задачу: время, напоминание, подзадачи, теги',
+     '⚡ Попробуй написать: «Спорт завтра в 18:00 !1 #здоровье»',
+     '📆 В Календаре зажми пустое время, чтобы добавить задачу'].forEach((title, i) =>
+      state.tasks.push({ id: uid(), title, notes: '', date: t, time: null, prio: 0, listId: 'inbox', tags: [], done: false, doneAt: null, subs: [], created: Date.now() + i }));
+    localStorage.setItem('kunim.welcome', '1'); save();
+  }
+} catch (e) {}
 
 render();
 pomoTick();
