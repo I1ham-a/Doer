@@ -220,3 +220,4 @@ header h1{margin:0;font-size:20px;flex:1}
 .sb .row{display:flex;flex-direction:column;gap:4px;margin:10px 0}.sb label{font-size:12px;color:var(--muted)}
 .err{color:var(--danger);word-break:break-word}
 .btn.danger{color:var(--danger)}
+.hb-bell{font-size:12px;color:var(--muted);padding:2px 6px;border:1px solid var(--line);border-radius:10px;white-space:nowrap}

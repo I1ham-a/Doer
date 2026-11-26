@@ -407,7 +407,7 @@ async function remoteExchange(c) {
     const cutoff = Date.now() - 60 * 864e5;
     for (const k in state.dead) if (state.dead[k] < cutoff) delete state.dead[k];
     stamp();
-    const r2 = await fetch(base + 'kunim_push', { method: 'POST', headers: h, body: JSON.stringify({ k: c.key, d: state }) });
+    const r2 = await fetch(base + 'kunim_push', { method: 'POST', headers: h, body: JSON.stringify({ k: c.key, d: { ...state, rem: computeReminders() } }) });
     if (!r2.ok) throw new Error('push ' + r2.status + ' ' + (await r2.text()).slice(0, 200));
     return;
   }
@@ -436,6 +436,69 @@ async function sync() {
 }
 let lastSync = 0;
 $('#syncBtn').addEventListener('click', () => { view = 'settings'; selId = null; document.body.classList.remove('menu'); render(); });
+const VAPID_PUBLIC = 'BOgDQ0ftgCavahxOeQmHp778ehM0ufHMacWhjNIEPSU5fFswqZUXgo5mvishRs40vpmy-WtlHqXAM00oKIpO5Hk';
+let testRem = null;
+// Upcoming reminders for the server to send as push notifications (computed in this device's local time).
+function computeReminders() {
+  const now = Date.now(), out = [];
+  for (const x of state.tasks) {
+    if (x.done || !x.date || x.remind === undefined || x.remind === '') continue;
+    const [h, m] = (x.time || '09:00').split(':').map(Number);
+    const d = parse(x.date); d.setHours(h, m, 0, 0);
+    const at = d.getTime() - +x.remind * 60000;
+    if (at > now - 10 * 60000 && at < now + 14 * 864e5) out.push({ id: x.id, t: '⏰ ' + x.title, b: x.time ? `${dateLabel(x.date)} в ${x.time}` : dateLabel(x.date), at });
+  }
+  for (const h of state.habits) {
+    if (!h.remindAt) continue;
+    const [hh, mm] = h.remindAt.split(':').map(Number);
+    for (let i = 0; i < 7; i++) {
+      const d = addDays(new Date(), i); d.setHours(hh, mm, 0, 0);
+      if ((h.checks || {})[ymd(d)]) continue;
+      const at = d.getTime(); if (at > now - 10 * 60000) out.push({ id: 'h-' + h.id + '-' + ymd(d), t: '🔥 ' + h.name, b: 'Не забудьте отметить привычку', at });
+    }
+  }
+  if (testRem) out.push(testRem);
+  return out;
+}
+const pushOn = () => { try { return localStorage.getItem('kunim.push') === '1'; } catch (e) { return false; } };
+const b64u = s => { const p = '='.repeat((4 - s.length % 4) % 4), b = atob((s + p).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(b, c => c.charCodeAt(0)); };
+async function sbRpc(fn, body) {
+  const c = cfg(), h = { 'Content-Type': 'application/json', apikey: c.anon };
+  if (c.anon.startsWith('eyJ')) h.Authorization = 'Bearer ' + c.anon;
+  const r = await fetch(c.url.replace(/\/+$/, '') + '/rest/v1/rpc/' + fn, { method: 'POST', headers: h, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error(fn + ' ' + r.status + ' ' + (await r.text()).slice(0, 200));
+}
+async function enablePush() {
+  const c = cfg();
+  if (c.type !== 'supabase' || !c.key) return alert('Сначала включите синхронизацию — уведомления работают через неё.');
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+    return alert('Здесь уведомления недоступны.\n\nНа айфоне: добавьте Күнім на экран «Домой» (Safari → Поделиться → На экран «Домой») и откройте его оттуда. Нужен iOS 16.4 или новее.');
+  }
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') return alert('Уведомления запрещены. Разрешите их в настройках телефона: Настройки → Уведомления → Күнім.');
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u(VAPID_PUBLIC) });
+    await sbRpc('kunim_sub', { k: c.key, s: sub.toJSON() });
+    localStorage.setItem('kunim.push', '1');
+    await sync(); render();
+    toast('🔔 Уведомления включены');
+  } catch (e) { alert('Не получилось включить уведомления: ' + (e.message || e)); }
+}
+async function disablePush() {
+  try {
+    const reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription();
+    if (sub) { try { await sbRpc('kunim_unsub', { e: sub.endpoint }); } catch (e) {} await sub.unsubscribe(); }
+  } catch (e) {}
+  localStorage.removeItem('kunim.push'); render(); toast('Уведомления выключены');
+}
+async function testPush() {
+  testRem = { id: 'test-' + Date.now(), t: '🔔 Проверка уведомлений', b: 'Если вы это видите — всё работает!', at: Date.now() + 60000 };
+  await sync();
+  toast(syncState === 'ok' ? 'Через 1–2 минуты придёт уведомление. Можно закрыть приложение.' : '⚠ Нет связи — попробуйте позже');
+  setTimeout(() => { testRem = null; }, 5 * 60000);
+}
 const SB_DEFAULT = { url: 'https://aeqozxyznklnyaouojak.supabase.co', anon: 'sb_publishable_MhEDPCJvj6ngU7u1wKlW_A_AAc9OtFf' };
 const SQL_TEXT = `-- Күнім: синхронизация. Вставьте целиком в Supabase → SQL Editor → Run.
 create table if not exists kunim_sync (
@@ -479,6 +542,9 @@ function renderSyncSettings() {
         <button class="btn primary" id="sNow">↻ Синхронизировать</button>
         <button class="btn" id="sCopy">📋 Код для другого устройства</button>
         <button class="btn danger" id="sOff">Отключить</button></div>
+      <h3 class="sh">Уведомления (даже когда приложение закрыто)</h3>
+      ${pushOn() ? `<p class="hint">🔔 Включены на этом устройстве.</p><div class="p-btns" style="justify-content:flex-start"><button class="btn" id="pTest">Проверить</button><button class="btn danger" id="pOff">Выключить</button></div>`
+        : `<div class="p-btns" style="justify-content:flex-start"><button class="btn primary" id="pOn">🔔 Включить уведомления</button></div><p class="hint">На айфоне работает, только если Күнім открыт с иконки на экране «Домой» (iOS 16.4+).</p>`}
       <p class="hint">Чтобы подключить телефон или ноутбук: нажмите «Код для другого устройства», отправьте его себе (например в Telegram «Избранное») и на другом устройстве нажмите «Вставить код подключения».</p>`
     : `<div class="p-btns" style="justify-content:flex-start"><button class="btn primary" id="sStart">☁ Включить синхронизацию</button><button class="btn" id="sPaste">📥 Вставить код подключения</button></div>
       <p class="hint"><b>Первое устройство:</b> нажмите «Включить синхронизацию».<br><b>Второе устройство:</b> нажмите «Вставить код подключения» и вставьте код с первого.</p>
@@ -495,6 +561,9 @@ async function copyText(t, okMsg) {
 document.addEventListener('click', async e => {
   const id = e.target.id;
   if (id === 'sNow') sync();
+  if (id === 'pOn') enablePush();
+  if (id === 'pOff') disablePush();
+  if (id === 'pTest') testPush();
   if (id === 'sSql') copyText(SQL_TEXT, '✓ SQL скопирован');
   if (id === 'sCopy') copyText(encodeConn(cfg()), '✓ Код скопирован — вставьте его на другом устройстве');
   if (id === 'sOff') { if (confirm('Отключить синхронизацию на этом устройстве? Задачи останутся здесь.')) { localStorage.removeItem(CFG); syncState = 'off'; render(); } }
@@ -534,7 +603,7 @@ function toast(msg) {
 async function notify(x) {
   const body = (x.time ? x.time + ' · ' : '') + 'Напоминание';
   toast('⏰ ' + x.title + (x.time ? ' — ' + x.time : ''));
-  if ('Notification' in window && Notification.permission === 'granted') {
+  if (!pushOn() && 'Notification' in window && Notification.permission === 'granted') {
     try { const reg = await navigator.serviceWorker?.getRegistration(); if (reg) return reg.showNotification(x.title, { body, tag: x.id, icon: 'icon.svg' }); } catch (e) {}
     new Notification(x.title, { body, tag: x.id });
   }
@@ -783,7 +852,7 @@ function renderHabits() {
   return `<input id="hbNew" class="hb-new" placeholder="+ Новая привычка">
     ${state.habits.length ? `<p class="hint">Сегодня: ${done} из ${state.habits.length} ✓</p>` : ''}
     ${state.habits.map(h => `<div class="hb">
-      <div class="hb-top"><button class="hb-name" data-hbedit="${h.id}">${esc(h.name)}</button><span class="hb-streak" title="Дней подряд">🔥 ${streak(h)}</span><span class="hb-total">всего ${Object.keys(h.checks || {}).length}</span></div>
+      <div class="hb-top"><button class="hb-name" data-hbedit="${h.id}">${esc(h.name)}</button><button class="hb-bell" data-hbrem="${h.id}" title="Напоминание">${h.remindAt ? '🔔 ' + h.remindAt : '🔕'}</button><span class="hb-streak" title="Дней подряд">🔥 ${streak(h)}</span><span class="hb-total">всего ${Object.keys(h.checks || {}).length}</span></div>
       <div class="hb-week">${days.map(d => `<button class="hb-d ${(h.checks || {})[d] ? 'on' : ''} ${d === t ? 'now' : ''}" data-hb="${h.id}" data-d="${d}"><small>${WD[parse(d).getDay()]}</small><b>${(h.checks || {})[d] ? '✓' : parse(d).getDate()}</b></button>`).join('')}</div>
     </div>`).join('') || '<div class="empty">Добавьте первую привычку выше 👆<br>Отмечайте её каждый день и копите серию 🔥</div>'}
     ${state.habits.length ? '<p class="hint">Нажмите на название, чтобы переименовать или удалить.</p>' : ''}`;
@@ -791,6 +860,16 @@ function renderHabits() {
 document.addEventListener('click', e => {
   const d = e.target.closest('[data-hb]');
   if (d) { const h = state.habits.find(h => h.id === d.dataset.hb); h.checks = { ...(h.checks || {}) }; if (h.checks[d.dataset.d]) delete h.checks[d.dataset.d]; else { h.checks[d.dataset.d] = 1; if (navigator.vibrate) navigator.vibrate(10); } touch(); }
+  const hr = e.target.closest('[data-hbrem]');
+  if (hr) {
+    const h = state.habits.find(h => h.id === hr.dataset.hbrem);
+    const v = prompt('Во сколько напоминать? (например 12:00). Пусто — без напоминания', h.remindAt || '');
+    if (v === null) return;
+    const m = v.trim().match(/^(\d{1,2})[:.](\d{2})$/);
+    if (v.trim() && !m) return alert('Напишите время так: 12:00');
+    h.remindAt = m ? `${pad(+m[1])}:${m[2]}` : ''; touch();
+    if (h.remindAt && !pushOn()) toast('Чтобы напоминания приходили, включите уведомления в Настройках');
+  }
   const ed = e.target.closest('[data-hbedit]');
   if (ed) {
     const h = state.habits.find(h => h.id === ed.dataset.hbedit);
