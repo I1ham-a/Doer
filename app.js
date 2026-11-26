@@ -377,7 +377,7 @@ const CFG = 'doer.sync';
 const cfg = () => { try { return JSON.parse(localStorage.getItem(CFG)) || {}; } catch (e) { return {}; } };
 let syncState = 'off', pushT = null, syncing = false, again = false;
 function syncLabel() {
-  return { off: '☁ Синхронизация выключена', ok: '☁ Синхронизировано', busy: '☁ Синхронизация…', err: '⚠ Нет связи с сервером' }[syncState];
+  return { off: '☁ Синхронизация выключена', ok: '☁ Синхронизировано', busy: '☁ Синхронизация…', err: '⚠ Ошибка синхронизации' }[syncState];
 }
 function baseUrl() { const c = cfg(); return (c.url || (location.protocol.startsWith('http') ? '' : '')).replace(/\/$/, ''); }
 function schedulePush() { if (!cfg().key) return; clearTimeout(pushT); pushT = setTimeout(sync, 800); }
@@ -395,33 +395,123 @@ function mergeInto(remote) {
   if (view.startsWith('list:') && !state.lists.some(l => 'list:' + l.id === view)) view = 'today';
   if (selId && !task(selId)) selId = null;
 }
+async function remoteExchange(c) {
+  if (c.type === 'supabase') {
+    const base = c.url.replace(/\/+$/, '') + '/rest/v1/rpc/';
+    const h = { 'Content-Type': 'application/json', apikey: c.anon };
+    if (c.anon.startsWith('eyJ')) h.Authorization = 'Bearer ' + c.anon;
+    const r1 = await fetch(base + 'kunim_pull', { method: 'POST', headers: h, body: JSON.stringify({ k: c.key }) });
+    if (!r1.ok) throw new Error('pull ' + r1.status + ' ' + (await r1.text()).slice(0, 200));
+    const remote = await r1.json();
+    if (remote && typeof remote === 'object') mergeInto(remote);
+    const cutoff = Date.now() - 60 * 864e5;
+    for (const k in state.dead) if (state.dead[k] < cutoff) delete state.dead[k];
+    stamp();
+    const r2 = await fetch(base + 'kunim_push', { method: 'POST', headers: h, body: JSON.stringify({ k: c.key, d: state }) });
+    if (!r2.ok) throw new Error('push ' + r2.status + ' ' + (await r2.text()).slice(0, 200));
+    return;
+  }
+  // own server (server.js)
+  const r = await fetch((c.url || '').replace(/\/$/, '') + '/api/sync', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sync-Key': c.key }, body: JSON.stringify(state) });
+  if (!r.ok) throw new Error(r.status);
+  mergeInto(await r.json());
+}
+let syncErr = '';
 async function sync() {
   const c = cfg(); if (!c.key) { syncState = 'off'; return renderSide(); }
   if (syncing) { again = true; return; }
   syncing = true; syncState = 'busy'; renderSide();
   try {
     stamp();
-    const r = await fetch(baseUrl() + '/api/sync', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sync-Key': c.key }, body: JSON.stringify(state) });
-    if (!r.ok) throw new Error(r.status);
     const focus = document.activeElement && document.activeElement.id;
-    mergeInto(await r.json());
+    await remoteExchange(c);
     for (const k in snap) delete snap[k];
     stamp(); save(false);
-    syncState = 'ok';
-    if (!['dTitle', 'dNotes', 'dSub', 'quickInput', 'search'].includes(focus) && !(document.activeElement || {}).dataset?.st) render(); else { renderSide(); renderTasks(); renderCal(); }
-  } catch (e) { syncState = 'err'; renderSide(); }
+    syncState = 'ok'; syncErr = ''; lastSync = Date.now();
+    const typing = ['dTitle', 'dNotes', 'dSub', 'quickInput', 'search', 'sUrl', 'sAnon', 'sKey', 'hbNew', 'dTags'].includes(focus) || (document.activeElement || {}).dataset?.st || document.activeElement?.classList?.contains('mx-add');
+    if (!typing) render(); else { renderSide(); }
+  } catch (e) { syncState = 'err'; syncErr = String(e.message || e); renderSide(); if (view === 'settings') renderExtra(); }
   syncing = false;
   if (again) { again = false; schedulePush(); }
 }
-$('#syncBtn').addEventListener('click', () => {
-  const c = cfg();
-  const key = prompt('Ключ синхронизации (одинаковый на всех устройствах, минимум 8 символов, держите в секрете).\nПусто — выключить синхронизацию.', c.key || '');
-  if (key === null) return;
-  const next = { key: key.trim(), url: c.url || '' };
-  if (!location.protocol.startsWith('http')) { const u = prompt('Адрес сервера (например https://doer.example.com)', next.url); if (u === null) return; next.url = u.trim(); }
-  if (next.key && next.key.length < 8) return alert('Ключ слишком короткий');
-  localStorage.setItem(CFG, JSON.stringify(next));
-  sync();
+let lastSync = 0;
+$('#syncBtn').addEventListener('click', () => { view = 'settings'; selId = null; document.body.classList.remove('menu'); render(); });
+const SQL_TEXT = `-- Күнім: синхронизация. Вставьте целиком в Supabase → SQL Editor → Run.
+create table if not exists kunim_sync (
+  id text primary key,
+  data jsonb not null,
+  updated_at timestamptz not null default now()
+);
+alter table kunim_sync enable row level security;
+revoke all on table kunim_sync from anon, authenticated;
+
+create or replace function kunim_pull(k text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  if length(k) < 16 then raise exception 'code too short'; end if;
+  return (select data from kunim_sync where id = encode(sha256(convert_to(k, 'UTF8')), 'hex'));
+end $$;
+
+create or replace function kunim_push(k text, d jsonb) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if length(k) < 16 then raise exception 'code too short'; end if;
+  insert into kunim_sync (id, data, updated_at)
+  values (encode(sha256(convert_to(k, 'UTF8')), 'hex'), d, now())
+  on conflict (id) do update set data = excluded.data, updated_at = now();
+end $$;
+
+revoke all on function kunim_pull(text) from public;
+revoke all on function kunim_push(text, jsonb) from public;
+grant execute on function kunim_pull(text) to anon, authenticated;
+grant execute on function kunim_push(text, jsonb) to anon, authenticated;
+`;
+const randCode = () => { const a = new Uint8Array(18); crypto.getRandomValues(a); return Array.from(a, b => 'abcdefghijkmnpqrstuvwxyz23456789'[b % 32]).join(''); };
+const encodeConn = c => 'KUNIM1:' + btoa(unescape(encodeURIComponent(JSON.stringify({ u: c.url, a: c.anon, k: c.key }))));
+function decodeConn(s) { const m = s.trim().match(/KUNIM1:([A-Za-z0-9+/=]+)/); if (!m) return null; const o = JSON.parse(decodeURIComponent(escape(atob(m[1])))); return { type: 'supabase', url: o.u, anon: o.a, key: o.k }; }
+function renderSyncSettings() {
+  const c = cfg(), on = !!c.key;
+  const status = !on ? 'выключена' : syncState === 'ok' ? `✓ работает${lastSync ? ' (' + new Date(lastSync).toTimeString().slice(0, 5) + ')' : ''}` : syncState === 'busy' ? 'синхронизация…' : syncState === 'err' ? '⚠ ошибка' : '…';
+  return `<h3 class="sh">Синхронизация между устройствами</h3>
+    <p class="hint">Статус: <b>${status}</b>${syncState === 'err' && syncErr ? `<br><small class="err">${esc(syncErr)}</small>` : ''}</p>
+    ${on ? `<div class="p-btns" style="justify-content:flex-start">
+        <button class="btn primary" id="sNow">↻ Синхронизировать</button>
+        <button class="btn" id="sCopy">📋 Код для другого устройства</button>
+        <button class="btn danger" id="sOff">Отключить</button></div>
+      <p class="hint">Чтобы подключить телефон или ноутбук: нажмите «Код для другого устройства», отправьте его себе (например в Telegram «Избранное») и на другом устройстве нажмите «Вставить код подключения».</p>`
+    : `<div class="p-btns" style="justify-content:flex-start"><button class="btn primary" id="sPaste">📥 Вставить код подключения</button></div>
+      <p class="hint">Уже настроили на другом устройстве? Вставьте код оттуда. Настраиваете впервые? Заполните поля ниже.</p>
+      <details class="sb"><summary>Первая настройка (Supabase)</summary>
+        <div class="row"><label>Project URL</label><input id="sUrl" placeholder="https://xxxx.supabase.co" value="${esc(c.url || '')}"></div>
+        <div class="row"><label>Publishable / anon key</label><input id="sAnon" placeholder="sb_publishable_… или eyJ…" value="${esc(c.anon || '')}"></div>
+        <div class="row"><label>Секретный код (придуман автоматически)</label><input id="sKey" value="${esc(c.key || randCode())}"></div>
+        <div class="p-btns" style="justify-content:flex-start"><button class="btn" id="sSql">📋 Скопировать SQL</button><button class="btn primary" id="sOn">Подключить</button></div>
+      </details>`}`;
+}
+async function copyText(t, okMsg) {
+  try { await navigator.clipboard.writeText(t); toast(okMsg); } catch (e) { prompt('Скопируйте вручную:', t); }
+}
+document.addEventListener('click', async e => {
+  const id = e.target.id;
+  if (id === 'sNow') sync();
+  if (id === 'sSql') copyText(SQL_TEXT, '✓ SQL скопирован');
+  if (id === 'sCopy') copyText(encodeConn(cfg()), '✓ Код скопирован — вставьте его на другом устройстве');
+  if (id === 'sOff') { if (confirm('Отключить синхронизацию на этом устройстве? Задачи останутся здесь.')) { localStorage.removeItem(CFG); syncState = 'off'; render(); } }
+  if (id === 'sOn') {
+    const c = { type: 'supabase', url: $('#sUrl').value.trim(), anon: $('#sAnon').value.trim(), key: $('#sKey').value.trim() };
+    if (!/^https?:\/\/.+/.test(c.url)) return alert('Вставьте Project URL (начинается с https://)');
+    if (c.anon.length < 20) return alert('Вставьте ключ (publishable или anon key)');
+    if (c.key.length < 16) return alert('Секретный код должен быть не короче 16 символов');
+    localStorage.setItem(CFG, JSON.stringify(c)); await sync(); render();
+    toast(syncState === 'ok' ? '✓ Синхронизация подключена' : '⚠ Не получилось — проверьте данные');
+  }
+  if (id === 'sPaste') {
+    const v = prompt('Вставьте код подключения (начинается с KUNIM1:)'); if (!v) return;
+    let c; try { c = decodeConn(v); } catch (er) { c = null; }
+    if (!c) return alert('Это не похоже на код подключения');
+    localStorage.setItem(CFG, JSON.stringify(c)); await sync(); render();
+    toast(syncState === 'ok' ? '✓ Устройство подключено, задачи объединены' : '⚠ Не получилось подключиться');
+  }
 });
 window.addEventListener('online', sync);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
@@ -740,8 +830,9 @@ function renderSettings() {
     <div class="seg big">${[['auto', '🌗 Как в системе'], ['light', '☀️ Светлая'], ['dark', '🌙 Тёмная']].map(([v, n]) => `<button data-tmode="${v}" class="${theme.mode === v ? 'on' : ''}">${n}</button>`).join('')}</div>
     <h3 class="sh">Цвет</h3>
     <div class="sw">${ACCENTS.map(c => `<button data-acc="${c}" class="${theme.accent === c ? 'on' : ''}" style="background:${c}" aria-label="${c}"></button>`).join('')}</div>
+    ${renderSyncSettings()}
     <h3 class="sh">Резервная копия</h3>
-    <p class="hint">Задачи хранятся только на этом устройстве. Сохраняйте копию в файл, чтобы не потерять их, или чтобы перенести на другое устройство.</p>
+    <p class="hint">${cfg().key ? 'Задачи синхронизируются, но копия в файл не помешает.' : 'Задачи хранятся только на этом устройстве.'} Сохраняйте копию в файл, чтобы не потерять их, или чтобы перенести на другое устройство.</p>
     <div class="p-btns" style="justify-content:flex-start"><button class="btn primary" id="bkSave">⬇ Сохранить копию</button><button class="btn" id="bkLoad">⬆ Загрузить из файла</button></div>
     <input type="file" id="bkFile" accept=".json,application/json" hidden>
   </div>`;
@@ -775,7 +866,7 @@ function renderExtra() {
   const box = $('#extra');
   const on = EXTRA.includes(view) && !query;
   box.hidden = !on; if (!on) return;
-  if (view === 'focus' && document.activeElement && ['pTask', 'pLen'].includes(document.activeElement.id)) return;
+  if (document.activeElement && ['pTask', 'pLen', 'sUrl', 'sAnon', 'sKey'].includes(document.activeElement.id)) return;
   box.innerHTML = view === 'matrix' ? renderMatrix() : view === 'focus' ? renderFocus() : view === 'stats' ? renderStats() : view === 'settings' ? renderSettings() : renderHabits();
 }
 
@@ -814,7 +905,7 @@ try {
      '✏️ Нажми на задачу: время, напоминание, подзадачи, теги',
      '⚡ Попробуй написать: «Спорт завтра в 18:00 !1 #здоровье»',
      '📆 В Календаре зажми пустое время, чтобы добавить задачу'].forEach((title, i) =>
-      state.tasks.push({ id: uid(), title, notes: '', date: t, time: null, prio: 0, listId: 'inbox', tags: [], done: false, doneAt: null, subs: [], created: Date.now() + i }));
+      state.tasks.push({ id: 'welcome-' + i, title, notes: '', date: t, time: null, prio: 0, listId: 'inbox', tags: [], done: false, doneAt: null, subs: [], created: Date.now() + i }));
     localStorage.setItem('kunim.welcome', '1'); save();
   }
 } catch (e) {}
