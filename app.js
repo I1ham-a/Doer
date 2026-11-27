@@ -54,7 +54,11 @@ function visible() {
   if (view === 'today') return r.filter(x => x.date && x.date <= t);
   if (view === 'tomorrow') return r.filter(x => x.date === tm);
   if (view === 'week') return r.filter(x => x.date && x.date <= w);
-  if (view === 'calendar') return calMode === 'week' ? [] : r.filter(x => x.date === calDay && !x.time);
+  if (view === 'calendar') {
+    if (calMode === 'month') return state.tasks.filter(x => x.date === calDay);
+    if (calMode === 'list') { const lim = ymd(addDays(new Date(), 30)); return r.filter(x => x.date && x.date <= lim); }
+    return [];
+  }
   if (view.startsWith('list:')) return r.filter(x => x.listId === view.slice(5));
   if (view.startsWith('tag:')) return r.filter(x => (x.tags || []).includes(view.slice(4)));
   return r;
@@ -110,7 +114,7 @@ function taskRow(x) {
 function renderTasks() {
   const items = visible().sort(cmp);
   let html = '';
-  if (view === 'today' || view === 'week' || view === 'tomorrow' || query || view === 'all') {
+  if (view === 'today' || view === 'week' || view === 'tomorrow' || query || view === 'all' || (view === 'calendar' && calMode === 'list')) {
     const groups = new Map();
     for (const x of items) {
       const t = today();
@@ -135,34 +139,72 @@ function renderTasks() {
       if (doneToday.length) html += `<div class="group"><h3 class="fold" id="foldDone">${showDone ? '▾' : '▸'} Выполнено (${doneToday.length})</h3>${showDone ? doneToday.map(taskRow).join('') : ''}</div>`;
       if (!items.length && doneToday.length) { $('#tasks').innerHTML = html.replace('<div class="group">', '<div class="empty" style="padding:30px 0">Всё сделано! 🎉</div><div class="group">'); return; }
     }
-  } else html = `<div class="group">${view === 'calendar' ? '<h3>Без времени</h3>' : ''}${items.map(taskRow).join('')}</div>`;
-  if (view === 'calendar' && !items.length && !query) { $('#tasks').innerHTML = ''; return; }
+  } else html = `<div class="group">${view === 'calendar' ? `<h3>${dateLabel(calDay)}</h3>` : ''}${items.map(taskRow).join('')}</div>`;
+  if (view === 'calendar' && !query && calMode === 'month' && !items.length) { $('#tasks').innerHTML = `<div class="group"><h3>${dateLabel(calDay)}</h3></div><div class="empty" style="padding:20px 0">Нет задач — напишите задачу в поле выше, она добавится на этот день</div>`; return; }
+  if (view === 'calendar' && !query && calMode !== 'month' && calMode !== 'list') { $('#tasks').innerHTML = ''; return; }
   $('#tasks').innerHTML = items.length ? html : (view === 'today' && !query ? html : '') + `<div class="empty">Здесь пока пусто 🎉<br>Добавьте задачу выше</div>`;
 }
 let showDone = false, planOpen = false;
 function rank(k) { return k === 'Просрочено' ? 0 : /^\d/.test(k) ? 1 : k === 'Без даты' ? 2 : 3; }
 
+const CAL_MODES = [['month', 'Месяц'], ['week', 'Неделя'], ['3day', '3 дня'], ['day', 'День'], ['list', 'Список']];
+const MON_GEN = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+const shortD = d => `${d.getDate()} ${MON_GEN[d.getMonth()].slice(0, 3)}`;
+function calTitle() {
+  if (calMode === 'month') return `${MONTHS[calMonth.getMonth()]} ${calMonth.getFullYear()}`;
+  if (calMode === 'list') return 'Ближайшие 30 дней';
+  const days = tlDays(), a = parse(days[0]), b = parse(days[days.length - 1]);
+  if (days.length === 1) return `${WD[a.getDay()]}, ${a.getDate()} ${MON_GEN[a.getMonth()]}`;
+  return `${shortD(a)} – ${shortD(b)}`;
+}
+function chipHtml(x) {
+  const c = list(x.listId).color;
+  return `<span class="mchip ${x.done ? 'done' : ''}" draggable="true" data-chip="${x.id}" style="--c:${c}">${x.time ? `<em>${x.time}</em>` : ''}${esc(x.title)}</span>`;
+}
 function renderCal() {
   const box = $('#calendar');
   box.hidden = view !== 'calendar' || !!query;
   if (box.hidden) return;
-  const seg = `<div class="seg"><button data-cmode="month" class="${calMode === 'month' ? 'on' : ''}">Месяц + день</button><button data-cmode="week" class="${calMode === 'week' ? 'on' : ''}">Неделя</button></div>`;
-  if (calMode === 'week') {
-    const w = weekDays(), a = parse(w[0]), b = parse(w[6]);
-    box.innerHTML = `${seg}<div class="cal-head"><button data-wk="-1">‹</button><span>${a.getDate()} ${MONTHS[a.getMonth()].slice(0, 3).toLowerCase()} – ${b.getDate()} ${MONTHS[b.getMonth()].slice(0, 3).toLowerCase()} ${b.getFullYear()}</span><button data-wk="1">›</button></div>`;
-    return;
-  }
-  const y = calMonth.getFullYear(), m = calMonth.getMonth();
+  const top = `<div class="cal-top">
+      ${calMode !== 'list' ? '<button class="nav-arrow" data-calnav="-1" aria-label="Назад">‹</button>' : ''}
+      <b>${calTitle()}</b>
+      ${calMode !== 'list' ? '<button class="nav-arrow" data-calnav="1" aria-label="Вперёд">›</button>' : ''}
+      <button class="today-btn" data-caltoday>Сегодня</button></div>
+    <div class="seg">${CAL_MODES.map(([v, n]) => `<button data-cmode="${v}" class="${calMode === v ? 'on' : ''}">${n}</button>`).join('')}</div>`;
+  if (calMode !== 'month') { box.innerHTML = top; box.className = 'slim'; return; }
+  box.className = '';
+  const y = calMonth.getFullYear(), m = calMonth.getMonth(), t = today();
   const first = (new Date(y, m, 1).getDay() + 6) % 7;
   const start = addDays(new Date(y, m, 1), -first);
-  const has = new Set(state.tasks.filter(x => !x.done && x.date).map(x => x.date));
+  const weeks = Math.ceil((first + new Date(y, m + 1, 0).getDate()) / 7);
+  const byDay = {};
+  for (const x of state.tasks) if (x.date) (byDay[x.date] = byDay[x.date] || []).push(x);
+  const maxChips = window.innerWidth < 720 ? 3 : 4;
   let cells = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map(d => `<div class="dow">${d}</div>`).join('');
-  for (let i = 0; i < 42; i++) {
+  for (let i = 0; i < weeks * 7; i++) {
     const d = addDays(start, i), s = ymd(d);
-    cells += `<button class="day ${d.getMonth() !== m ? 'other' : ''} ${s === today() ? 'today' : ''} ${s === calDay ? 'sel' : ''} ${has.has(s) ? 'has' : ''}" data-day="${s}">${d.getDate()}<i></i></button>`;
+    const items = (byDay[s] || []).slice().sort((a, b) => (a.done - b.done) || (a.time || '99').localeCompare(b.time || '99') || prioKey(a.prio) - prioKey(b.prio));
+    const shown = items.slice(0, maxChips), more = items.length - shown.length;
+    cells += `<div class="mday ${d.getMonth() !== m ? 'other' : ''} ${s === t ? 'today' : ''} ${s === calDay ? 'sel' : ''} ${[0, 6].includes(d.getDay()) ? 'we' : ''}" data-day="${s}">
+      <span class="dn">${d.getDate()}</span>${shown.map(chipHtml).join('')}${more > 0 ? `<span class="mmore">+${more}</span>` : ''}</div>`;
   }
-  box.innerHTML = `${seg}<div class="cal-head"><button data-cal="-1">‹</button><span>${MONTHS[m]} ${y}</span><button data-cal="1">›</button></div><div class="cal-grid">${cells}</div>`;
+  box.innerHTML = `${top}<div class="mgrid">${cells}</div>`;
 }
+// month view: drag a task chip to another day (computer)
+document.addEventListener('dragstart', e => { const c = e.target.closest && e.target.closest('.mchip'); if (c) { e.dataTransfer.setData('text/kunim-task', c.dataset.chip); e.dataTransfer.effectAllowed = 'move'; } });
+document.addEventListener('dragover', e => { const d = e.target.closest && e.target.closest('.mday'); if (d && e.dataTransfer.types.includes('text/kunim-task')) { e.preventDefault(); d.classList.add('drop'); } });
+document.addEventListener('dragleave', e => { const d = e.target.closest && e.target.closest('.mday'); if (d) d.classList.remove('drop'); });
+document.addEventListener('drop', e => { const d = e.target.closest && e.target.closest('.mday'); if (!d) return; const id = e.dataTransfer.getData('text/kunim-task'); if (!id) return; e.preventDefault(); const x = task(id); if (x) { x.date = d.dataset.day; calDay = x.date; touch(); } });
+document.addEventListener('click', e => {
+  const nav = e.target.closest('[data-calnav]');
+  if (nav) {
+    const n = +nav.dataset.calnav;
+    if (calMode === 'month') { calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() + n, 1); const t = today(); calDay = ymd(calMonth).slice(0, 7) === t.slice(0, 7) ? t : ymd(calMonth); }
+    else { calDay = ymd(addDays(parse(calDay), n * (calMode === 'week' ? 7 : calMode === '3day' ? 3 : 1))); const d = parse(calDay); calMonth = new Date(d.getFullYear(), d.getMonth(), 1); }
+    return render();
+  }
+  if (e.target.closest('[data-caltoday]')) { calDay = today(); const d = new Date(); calMonth = new Date(d.getFullYear(), d.getMonth(), 1); return render(); }
+});
 
 function renderDetail() {
   const x = task(selId), box = $('#detail');
@@ -211,7 +253,10 @@ function parseQuick(text) {
     const tg = name.toLowerCase(); if (!tags.includes(tg)) tags.push(tg); return sp;
   });
   title = title.replace(/(^|\s)!([1-3])(?=\s|$)/, (m, sp, p) => { prio = +p; return sp; });
-  title = title.replace(/(^|\s)(?:в\s+)?(\d{1,2})[:.](\d{2})(?=\s|$)/i, (m, sp, h, mi) => { if (+h < 24 && +mi < 60) { time = `${pad(h)}:${mi}`; return sp; } return m; });
+  // time: "в 15:00", "в 7.30" or "15:00" (a bare "3.12" is a date, not a time)
+  const tm = (m, sp, h, mi) => { if (+h < 24 && +mi < 60) { time = `${pad(h)}:${mi}`; return sp; } return m; };
+  title = title.replace(/(^|\s)в\s+(\d{1,2})[:.](\d{2})(?=\s|$)/i, tm);
+  if (!time) title = title.replace(/(^|\s)(\d{1,2}):(\d{2})(?=\s|$)/, tm);
   const rel = [[/(^|\s)послезавтра(?=\s|$)/i, 2], [/(^|\s)завтра(?=\s|$)/i, 1], [/(^|\s)сегодня(?=\s|$)/i, 0]];
   for (const [re, n] of rel) if (re.test(title)) { date = ymd(addDays(new Date(), n)); title = title.replace(re, '$1'); break; }
   if (!date) {
@@ -642,10 +687,10 @@ function layout(ev) {
   fin();
 }
 function weekDays() { const d = parse(calDay), mon = addDays(d, -((d.getDay() + 6) % 7)); return [...Array(7)].map((_, i) => ymd(addDays(mon, i))); }
-const tlDays = () => calMode === 'week' ? weekDays() : [calDay];
+const tlDays = () => calMode === 'week' ? weekDays() : calMode === '3day' ? [0, 1, 2].map(i => ymd(addDays(parse(calDay), i))) : [calDay];
 function renderTimeline() {
   const box = $('#timeline');
-  box.hidden = view !== 'calendar' || !!query;
+  box.hidden = view !== 'calendar' || !!query || !['week', '3day', 'day'].includes(calMode);
   if (box.hidden) { tlKey = null; return; }
   if (drag) return;
   const days = tlDays(), D = days.length, key = calMode + days[0], t = today();
@@ -653,7 +698,7 @@ function renderTimeline() {
   const keep = prev && tlKey === key ? prev.scrollTop : null;
   let hours = '', blocks = '', now = '', cols = '';
   for (let h = 0; h < 24; h++) hours += `<div class="tl-h" style="top:${h * HOUR}px"><span>${pad(h)}:00</span></div>`;
-  for (let i = D > 1 ? 0 : 1; i < D; i++) cols += `<div class="tl-col" style="left:calc(52px + ${W} * ${i / D})"></div>`;
+  for (let i = 0; i < D; i++) cols += `<div class="tl-col" style="left:calc(52px + ${W} * ${i / D})"></div>`;
   days.forEach((d, di) => {
     const ev = state.tasks.filter(x => x.date === d && x.time).map(x => { const s = toMin(x.time); return { x, s, e: Math.min(1440, s + (x.dur || 60)) }; }).sort((a, b) => a.s - b.s || b.e - a.e);
     layout(ev);
@@ -661,9 +706,10 @@ function renderTimeline() {
     if (d === t) now = `<div class="tl-now" style="top:${nowMin() / 60 * HOUR}px;left:calc(48px + ${W} * ${di / D});width:calc(${W} / ${D} + 4px)"></div>`;
   });
   let head = '';
-  if (D > 1) head = `<div class="tl-days"><div></div>${days.map(d => { const dd = parse(d), ad = state.tasks.filter(x => x.date === d && !x.time && !x.done); return `<div class="tl-day ${d === t ? 'today' : ''}"><button data-wday="${d}"><small>${WD[dd.getDay()]}</small><b>${dd.getDate()}</b></button>${ad.slice(0, 2).map(x => `<span class="chip" data-chip="${x.id}">${esc(x.title)}</span>`).join('')}${ad.length > 2 ? `<span class="chip more" data-wday="${d}">+${ad.length - 2}</span>` : ''}</div>`; }).join('')}</div>`;
-  const title = D > 1 ? '' : `<div class="tl-title">${dateLabel(calDay)} — по часам<small>Зажмите пустое место (или потяните), чтобы добавить задачу. Зажмите задачу, чтобы перенести; тяните за нижний край, чтобы изменить длительность.</small></div>`;
-  box.innerHTML = `${title}<div class="tl-scroll ${D > 1 ? 'week' : ''}">${head}<div class="tl-grid" style="height:${24 * HOUR}px">${hours}${cols}${now}${blocks}</div></div>`;
+  const lim = D > 3 ? 2 : 4;
+  head = `<div class="tl-days" style="grid-template-columns:52px repeat(${D},minmax(0,1fr))"><div class="tl-allday">весь<br>день</div>${days.map(d => { const dd = parse(d), ad = state.tasks.filter(x => x.date === d && !x.time && !x.done); return `<div class="tl-day ${d === t ? 'today' : ''}"><button data-wday="${d}"><small>${WD[dd.getDay()]}</small><b>${dd.getDate()}</b></button>${ad.slice(0, lim).map(x => `<span class="chip" data-chip="${x.id}" style="--c:${list(x.listId).color}">${esc(x.title)}</span>`).join('')}${ad.length > lim ? `<span class="chip more" data-wday="${d}">+${ad.length - lim}</span>` : ''}</div>`; }).join('')}</div>`;
+  const title = `<div class="tl-hint">Зажмите пустое время — новая задача · зажмите задачу — перенести · тяните низ — длительность</div>`;
+  box.innerHTML = `${title}<div class="tl-scroll week">${head}<div class="tl-grid" style="height:${24 * HOUR}px">${hours}${cols}${now}${blocks}</div></div>`;
   box.querySelector('.tl-scroll').scrollTop = keep ?? Math.max(0, (days.includes(t) ? nowMin() - 90 : 8 * 60) / 60 * HOUR);
   tlKey = key;
 }
@@ -744,7 +790,7 @@ document.addEventListener('click', e => {
   const wk = e.target.closest('[data-wk]');
   if (wk) { calDay = ymd(addDays(parse(calDay), 7 * +wk.dataset.wk)); const d = parse(calDay); calMonth = new Date(d.getFullYear(), d.getMonth(), 1); return render(); }
   const wd = e.target.closest('[data-wday]');
-  if (wd) { calDay = wd.dataset.wday; calMode = 'month'; const d = parse(calDay); calMonth = new Date(d.getFullYear(), d.getMonth(), 1); return render(); }
+  if (wd) { calDay = wd.dataset.wday; calMode = 'day'; try { localStorage.setItem('doer.calmode', 'day'); } catch (er) {} const d = parse(calDay); calMonth = new Date(d.getFullYear(), d.getMonth(), 1); return render(); }
   const ch = e.target.closest('[data-chip]');
   if (ch) { selId = ch.dataset.chip; render(); }
 });
@@ -991,7 +1037,7 @@ try {
      '✏️ Нажми на задачу: время, напоминание, подзадачи, теги',
      '⚡ Попробуй написать: «Спорт завтра в 18:00 !1 #здоровье»',
      '📆 В Календаре зажми пустое время, чтобы добавить задачу'].forEach((title, i) =>
-      state.tasks.push({ id: 'welcome-' + i, title, notes: '', date: t, time: null, prio: 0, listId: 'inbox', tags: [], done: false, doneAt: null, subs: [], created: Date.now() + i }));
+      state.tasks.push({ id: 'welcome-' + i, updated: 1, title, notes: '', date: t, time: null, prio: 0, listId: 'inbox', tags: [], done: false, doneAt: null, subs: [], created: Date.now() + i }));
     localStorage.setItem('kunim.welcome', '1'); save();
   }
 } catch (e) {}
