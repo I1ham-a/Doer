@@ -1,11 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-<defs>
-<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#14c0e0"/><stop offset="1" stop-color="#0093b8"/></linearGradient>
-<radialGradient id="sun" cx="0.4" cy="0.35" r="0.75"><stop offset="0" stop-color="#ffe066"/><stop offset="1" stop-color="#f5b400"/></radialGradient>
-</defs>
-<rect width="512" height="512" rx="112" fill="url(#bg)"/>
-<path d="M373.7 231.7L418.0 240.0L373.7 248.3Z M371.8 262.5L412.5 281.9L367.6 278.4Z M362.1 291.7L396.3 321.0L353.8 306.0Z M345.1 317.4L370.6 354.6L333.4 329.1Z M322.0 337.8L337.0 380.3L307.7 346.1Z M294.4 351.6L297.9 396.5L278.5 355.8Z M264.3 357.7L256.0 402.0L247.7 357.7Z M233.5 355.8L214.1 396.5L217.6 351.6Z M204.3 346.1L175.0 380.3L190.0 337.8Z M178.6 329.1L141.4 354.6L166.9 317.4Z M158.2 306.0L115.7 321.0L149.9 291.7Z M144.4 278.4L99.5 281.9L140.2 262.5Z M138.3 248.3L94.0 240.0L138.3 231.7Z M140.2 217.5L99.5 198.1L144.4 201.6Z M149.9 188.3L115.7 159.0L158.2 174.0Z M166.9 162.6L141.4 125.4L178.6 150.9Z M190.0 142.2L175.0 99.7L204.3 133.9Z M217.6 128.4L214.1 83.5L233.5 124.2Z M247.7 122.3L256.0 78.0L264.3 122.3Z M278.5 124.2L297.9 83.5L294.4 128.4Z M307.7 133.9L337.0 99.7L322.0 142.2Z M333.4 150.9L370.6 125.4L345.1 162.6Z M353.8 174.0L396.3 159.0L362.1 188.3Z M367.6 201.6L412.5 198.1L371.8 217.5Z" fill="#ffd23f"/>
-<circle cx="256" cy="240" r="104" fill="url(#sun)"/>
-<path d="M206 244l36 36 66-76" fill="none" stroke="#fff" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M96 430 Q256 370 416 430" fill="none" stroke="#ffd23f" stroke-width="14" stroke-linecap="round" opacity=".9"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><defs><linearGradient id="g2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff9a3c"/><stop offset="1" stop-color="#ff4f7b"/></linearGradient></defs>
+<rect width="512" height="512" rx="112" fill="url(#g2)"/>
+<path d="M117.4 242.6L74.9 225.0 M149.9 193.9L117.4 161.4 M198.6 161.4L181.0 118.9 M256.0 150.0L256.0 104.0 M313.4 161.4L331.0 118.9 M362.1 193.9L394.6 161.4 M394.6 242.6L437.1 225.0" stroke="#fff" stroke-width="20" stroke-linecap="round"/>
+<path d="M126 300a130 130 0 0 1 260 0z" fill="#fff"/>
+<path d="M210 262l32 30 62-66" fill="none" stroke="#ff6f5e" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="96" y="330" width="320" height="24" rx="12" fill="#fff"/><rect x="156" y="378" width="200" height="22" rx="11" fill="#fff" opacity=".7"/></svg>
